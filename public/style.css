@@ -1,0 +1,340 @@
+/* web-menu styles — minimal, light/dark aware, mobile-friendly. */
+
+:root {
+  --bg: #fafaf7;
+  --card: #ffffff;
+  --ink: #1e2326;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --accent: #d97706;
+  --accent-ink: #ffffff;
+  --good: #059669;
+  --bad: #dc2626;
+  --chip: #f3f4f6;
+  --chip-on: #fde68a;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171a;
+    --card: #1c2024;
+    --ink: #e8eaed;
+    --muted: #9aa3ad;
+    --line: #2a2f34;
+    --accent: #f59e0b;
+    --accent-ink: #1a1306;
+    --chip: #262b30;
+    --chip-on: #7c5a13;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  min-height: 100vh;
+  line-height: 1.45;
+}
+
+main { max-width: 960px; margin: 0 auto; padding: 1rem; }
+
+h1 { font-size: 1.25rem; margin: 0; }
+h2 { margin: 0 0 .25rem; }
+h3 { margin: 0 0 .5rem; }
+.muted { color: var(--muted); margin: .25rem 0 1rem; }
+.error { color: var(--bad); }
+
+/* ---------- Topbar / tabs ---------- */
+.topbar {
+  display: flex; align-items: center; gap: 1rem;
+  padding: .75rem 1rem; border-bottom: 1px solid var(--line);
+  background: var(--card); position: sticky; top: 0; z-index: 10;
+  flex-wrap: wrap;
+}
+.topbar nav { display: flex; gap: .25rem; flex-wrap: wrap; }
+.topbar form { margin-left: auto; }
+.tab {
+  background: transparent; color: var(--ink); border: 1px solid transparent;
+  padding: .4rem .75rem; border-radius: .5rem; cursor: pointer; font-size: .95rem;
+}
+.tab:hover { background: var(--chip); }
+.tab.active { background: var(--accent); color: var(--accent-ink); }
+
+/* ---------- Buttons / inputs ---------- */
+button {
+  font: inherit; padding: .5rem .9rem; border-radius: .5rem;
+  border: 1px solid var(--line); background: var(--card); color: var(--ink);
+  cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button.link { background: transparent; border: none; color: var(--muted); }
+button.link:hover { color: var(--accent); }
+button.danger { color: var(--bad); }
+
+input, select, textarea {
+  font: inherit; padding: .5rem .65rem; border-radius: .5rem;
+  border: 1px solid var(--line); background: var(--card); color: var(--ink); width: 100%;
+}
+label { display: block; margin: .5rem 0; font-size: .9rem; color: var(--muted); }
+label input, label select, label textarea { margin-top: .25rem; color: var(--ink); }
+
+.row { display: flex; gap: .5rem; align-items: end; flex-wrap: wrap; margin-top: .5rem; }
+.row > label { flex: 1; min-width: 120px; }
+
+.card {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: .75rem; padding: 1rem; margin-bottom: 1rem;
+}
+
+/* ---------- Login ---------- */
+.centered { display: grid; place-items: center; min-height: 100vh; padding: 1rem; }
+.login-card { width: min(360px, 100%); }
+.login-card button { width: 100%; margin-top: .5rem; }
+.btn-google {
+  display: block; text-align: center; padding: .55rem 0;
+  background: var(--card); color: var(--ink); border: 1px solid var(--line);
+  border-radius: .5rem; text-decoration: none; margin-top: .5rem;
+}
+.btn-google:hover { border-color: var(--accent); }
+
+/* ---------- Tag chips ---------- */
+.tag-chips { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; }
+.chip {
+  display: inline-flex; align-items: center; gap: .25rem;
+  background: var(--chip); color: var(--ink);
+  padding: .2rem .55rem; border-radius: 999px; font-size: .8rem;
+  border: 1px solid transparent; cursor: pointer; user-select: none;
+}
+.chip.on { background: var(--chip-on); border-color: var(--accent); }
+.tag-chips.read-only .chip { cursor: default; }
+
+.filter-row {
+  display: flex; flex-wrap: wrap; gap: .5rem; align-items: center;
+  margin: .5rem 0 1rem;
+}
+.filter-row input { flex: 1; min-width: 180px; }
+
+/* ---------- Pick view ---------- */
+.pick-result h3 { font-size: 1.4rem; }
+
+/* ---------- View header / nav ---------- */
+.view-header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: .5rem; flex-wrap: wrap;
+}
+.nav-controls { display: flex; gap: .25rem; }
+.nav-controls button { padding: .3rem .65rem; }
+
+/* ---------- Plan controls ---------- */
+.plan-controls { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.day-selector { display: flex; gap: .2rem; }
+.day-selector button {
+  padding: .25rem .5rem; font-size: .8rem;
+  border-radius: .4rem;
+}
+.day-selector button.active {
+  background: var(--accent); color: var(--accent-ink); border-color: var(--accent);
+}
+
+/* ---------- Calendar (Plan + History) ---------- */
+.history-calendar {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: .35rem;
+}
+.plan-grid {
+  display: grid;
+  gap: .35rem;
+  /* default 7-day; overridden by data-days below */
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+.plan-grid[data-days="1"] { grid-template-columns: minmax(0, 380px); }
+.plan-grid[data-days="2"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.plan-grid[data-days="3"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.plan-grid[data-days="5"] { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.plan-grid[data-days="7"] { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.dow-head {
+  font-size: .75rem; color: var(--muted); text-align: center;
+  padding: .2rem 0; text-transform: uppercase; letter-spacing: .04em;
+}
+.day {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: .5rem; padding: .4rem;
+  min-height: 90px;
+  display: flex; flex-direction: column;
+}
+.day.today { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.day.out { opacity: .45; }
+.day-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: .25rem; margin-bottom: .25rem;
+}
+.day-num { font-weight: 600; font-size: .95rem; }
+.day-mon { color: var(--muted); font-size: .75rem; }
+.all-eaten { font-size: .85rem; padding: .1rem .25rem; }
+
+.slot {
+  display: flex; flex-direction: column;
+  border-top: 1px dashed var(--line); padding: .3rem 0; font-size: .82rem;
+  gap: .15rem;
+}
+.slot:first-of-type { border-top: none; }
+.slot-sub {
+  border-top: none;
+  padding-top: 0;
+  padding-left: .6rem;
+  margin-top: -.1rem;
+}
+.slot-sub .slot-label { color: var(--accent); opacity: .8; }
+.slot-label {
+  color: var(--muted); font-size: .68rem; text-transform: uppercase;
+  letter-spacing: .05em; line-height: 1.2;
+}
+.slot-row {
+  display: flex; align-items: center; gap: .25rem;
+}
+.slot-row .name { flex: 1; cursor: pointer; overflow-wrap: anywhere; line-height: 1.3; }
+.slot-row .name.empty { color: var(--muted); font-style: italic; }
+.slot-row .name.eaten { text-decoration: line-through; color: var(--good); }
+.slot .ctrl {
+  background: transparent; border: none; padding: 0 .15rem;
+  font-size: .9rem; color: var(--muted); cursor: pointer; flex-shrink: 0;
+}
+.slot .ctrl:hover { color: var(--accent); }
+
+/* History day entries */
+.hist-day .hist-entry {
+  display: flex; align-items: center; gap: .3rem;
+  font-size: .75rem; padding: .1rem .15rem; border-radius: .25rem;
+  cursor: pointer;
+}
+.hist-day .hist-entry:hover { background: var(--chip); }
+.hist-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slot-dot {
+  width: .5rem; height: .5rem; border-radius: 50%; flex-shrink: 0;
+  background: var(--muted);
+}
+.slot-dot[data-slot=breakfast] { background: #f59e0b; }
+.slot-dot[data-slot=lunch]     { background: #10b981; }
+.slot-dot[data-slot=dinner]    { background: #6366f1; }
+.slot-dot[data-slot=snack]     { background: #ec4899; }
+
+@media (max-width: 640px) {
+  /* On small screens collapse 5- and 7-day grids to 1 column each, 
+     so users should pick 1-3d for comfortable mobile use. */
+  .plan-grid[data-days="5"],
+  .plan-grid[data-days="7"] {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .history-calendar { gap: .2rem; }
+  .day { min-height: 60px; padding: .25rem; }
+  .slot-label { font-size: .62rem; }
+  .day-mon { display: none; }
+}
+
+/* ---------- Tag management ---------- */
+.tags-manage { display: flex; flex-direction: column; gap: .35rem; margin-top: .5rem; }
+.tag-row {
+  display: flex; align-items: center; gap: .5rem;
+}
+.tag-row input { flex: 1; min-width: 100px; }
+.tag-row .meta { color: var(--muted); font-size: .8rem; min-width: 5rem; }
+
+/* ---------- History list (legacy) + entry rows ---------- */
+.entry-list { display: flex; flex-direction: column; gap: .5rem; }
+.entry {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: .5rem; padding: .6rem .8rem;
+  display: flex; justify-content: space-between; gap: .5rem; align-items: center;
+  flex-wrap: wrap;
+}
+.entry .meta { color: var(--muted); font-size: .85rem; }
+.entry .actions { display: flex; gap: .25rem; }
+
+/* ---------- Meals gallery ---------- */
+.meal-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: .75rem;
+}
+.meal-tile {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: .6rem; overflow: hidden; cursor: pointer;
+  display: flex; flex-direction: column;
+  transition: transform .08s ease, border-color .08s ease;
+}
+.meal-tile:hover { border-color: var(--accent); transform: translateY(-1px); }
+.tile-cover {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  background-color: var(--chip);
+  background-size: cover; background-position: center;
+  display: flex; align-items: center; justify-content: center;
+}
+.tile-placeholder { font-size: 2.5rem; opacity: .35; }
+.tile-count {
+  position: absolute; bottom: .35rem; left: .35rem;
+  background: rgba(0,0,0,.55); color: #fff;
+  padding: .1rem .4rem; border-radius: 999px; font-size: .7rem;
+}
+.tile-del {
+  position: absolute; top: .25rem; right: .25rem;
+  background: rgba(0,0,0,.55); color: #fff; border: none;
+  width: 1.6rem; height: 1.6rem; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: .8rem; padding: 0; cursor: pointer;
+}
+.tile-del:hover { background: var(--bad); }
+.tile-body { padding: .5rem .6rem .6rem; }
+.tile-name { line-height: 1.25; }
+.tile-body .meta {
+  color: var(--muted); font-size: .8rem;
+  margin: .15rem 0 .35rem;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ---------- Photo manager (inside meal form) ---------- */
+.photo-manager {
+  display: flex; flex-wrap: wrap; gap: .4rem;
+  margin: .25rem 0 .4rem;
+}
+.photo-manager:empty { display: none; }
+.photo-tile {
+  position: relative;
+  width: 80px; height: 80px;
+  border-radius: .4rem; overflow: hidden;
+  background: var(--chip); border: 1px solid var(--line);
+}
+.photo-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.photo-tile .photo-del {
+  position: absolute; top: 2px; right: 2px;
+  background: rgba(0,0,0,.6); color: #fff; border: none;
+  width: 1.2rem; height: 1.2rem; border-radius: 50%;
+  font-size: .7rem; padding: 0; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.photo-tile.pending { outline: 2px dashed var(--accent); outline-offset: -2px; }
+.photo-pending {
+  position: absolute; bottom: 2px; left: 2px;
+  background: var(--accent); color: var(--accent-ink);
+  font-size: .6rem; padding: 0 .3rem; border-radius: 4px;
+}
+
+/* ---------- Dialog (meal picker) ---------- */
+dialog {
+  border: 1px solid var(--line); border-radius: .75rem;
+  background: var(--card); color: var(--ink); max-width: 420px; width: 90%;
+  padding: 1rem;
+}
+dialog::backdrop { background: rgba(0,0,0,.4); }
+.meal-picker-list {
+  list-style: none; margin: .5rem 0; padding: 0;
+  max-height: 50vh; overflow-y: auto;
+}
+.meal-picker-list li {
+  padding: .4rem .5rem; border-radius: .35rem; cursor: pointer;
+}
+.meal-picker-list li:hover { background: var(--chip); }

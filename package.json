@@ -1,0 +1,22 @@
+{
+  "name": "web-menu",
+  "version": "0.1.0",
+  "description": "Meal picker, planner, and history log for two.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "import": "node scripts/import-csv.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.3.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "express-session": "^1.18.0",
+    "session-file-store": "^1.5.0"
+  }
+}

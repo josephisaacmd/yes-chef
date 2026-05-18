@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Menu</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>🍽️ Menu</h1>
+    <nav>
+      <button class="tab" data-tab="pick">Pick</button>
+      <button class="tab" data-tab="plan">Plan</button>
+      <button class="tab" data-tab="history">History</button>
+      <button class="tab" data-tab="meals">Meals</button>
+    </nav>
+    <form id="logout-form"><button class="link" type="submit">Sign out</button></form>
+  </header>
+
+  <main>
+    <!-- ============ PICK ============ -->
+    <section class="view" data-view="pick">
+      <h2>What should we eat?</h2>
+      <p class="muted">Filter by tag, then roll the dice. Add it to today's plan or log it as eaten.</p>
+
+      <div class="filter-row">
+        <div id="pick-tags" class="tag-chips"></div>
+      </div>
+      <div class="row pick-actions">
+        <label style="flex:0 0 auto;">Skip last
+          <input type="number" id="pick-avoid" min="0" max="365" value="14" style="width:5rem" />
+          days
+        </label>
+        <button id="pick-roll" class="primary">🎲 Pick a meal</button>
+        <button id="pick-new">✨ Try something new</button>
+      </div>
+
+      <div id="pick-result" class="card pick-result" hidden>
+        <h3 id="pick-name"></h3>
+        <div id="pick-meal-tags" class="tag-chips read-only"></div>
+        <p id="pick-last-eaten" class="muted" hidden></p>
+        <p id="pick-notes" class="muted"></p>
+        <div class="row">
+          <label>Slot
+            <select id="pick-slot">
+              <option value="breakfast">Breakfast</option>
+              <option value="lunch">Lunch</option>
+              <option value="dinner" selected>Dinner</option>
+              <option value="snack">Snack</option>
+            </select>
+          </label>
+          <label>Date
+            <input type="date" id="pick-date" />
+          </label>
+        </div>
+        <div class="row">
+          <button id="pick-plan">📅 Add to plan</button>
+          <button id="pick-eaten" class="primary">🍽️ Log as eaten</button>
+          <button id="pick-again">🎲 Roll again</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ PLAN ============ -->
+    <section class="view" data-view="plan" hidden>
+      <div class="view-header">
+        <h2>This week</h2>
+        <div class="plan-controls">
+          <div class="day-selector" id="plan-day-selector">
+            <button data-days="1">1d</button>
+            <button data-days="2">2d</button>
+            <button data-days="3">3d</button>
+            <button data-days="5">5d</button>
+            <button data-days="7">7d</button>
+          </div>
+          <div class="nav-controls">
+            <button id="plan-prev" title="Previous">‹</button>
+            <button id="plan-today">Today</button>
+            <button id="plan-next" title="Next">›</button>
+          </div>
+        </div>
+      </div>
+      <p class="muted">Click a slot to assign a meal. Mark planned meals as eaten when the day comes.</p>
+      <div id="plan-grid" class="plan-grid"></div>
+    </section>
+
+    <!-- ============ HISTORY ============ -->
+    <section class="view" data-view="history" hidden>
+      <div class="view-header">
+        <h2 id="history-title">History</h2>
+        <div class="nav-controls">
+          <button id="history-prev" title="Previous month">‹</button>
+          <button id="history-today">Today</button>
+          <button id="history-next" title="Next month">›</button>
+        </div>
+      </div>
+      <p class="muted">Everything we've eaten, by month.</p>
+      <div id="history-calendar" class="history-calendar"></div>
+    </section>
+
+    <!-- ============ MEALS ============ -->
+    <section class="view" data-view="meals" hidden>
+      <h2>Meals</h2>
+
+      <details class="card">
+        <summary><strong>Manage tags</strong></summary>
+        <p class="muted">Rename or delete tags. Deleting a tag removes it from all meals.</p>
+        <div id="tags-manage" class="tags-manage"></div>
+      </details>
+
+      <details class="card">
+        <summary><strong>Bulk import from CSV</strong></summary>
+        <p class="muted">
+          Columns: <code>name</code> (required), <code>tags</code> (optional, use <code>;</code> or <code>|</code> between tags), <code>notes</code> (optional).
+          Existing meals get their tags merged — re-importing is safe.
+        </p>
+        <input type="file" id="csv-file" accept=".csv,text/csv" />
+        <label style="display:inline-flex; align-items:center; gap:.35rem; margin-left:.5rem;">
+          <input type="checkbox" id="csv-replace" style="width:auto" /> replace tags instead of merging
+        </label>
+        <div class="row">
+          <button type="button" id="csv-import" class="primary">Import</button>
+          <span id="csv-status" class="muted"></span>
+        </div>
+      </details>
+
+      <form id="meal-form" class="card">
+        <h3 id="meal-form-title">Add a meal</h3>
+        <input type="hidden" name="id" />
+        <label>Name
+          <input name="name" required placeholder="e.g. Chicken tikka masala" />
+        </label>
+        <label>Tags (comma-separated)
+          <input name="tags" placeholder="home cook, healthy, quick" />
+        </label>
+        <label>Notes
+          <textarea name="notes" rows="2" placeholder="Recipe link, side dishes, etc."></textarea>
+        </label>
+        <label>Photos
+          <div id="meal-photos" class="photo-manager"></div>
+          <input type="file" id="meal-photo-input" accept="image/*" multiple />
+          <span id="meal-photo-status" class="muted" style="font-size:.8rem"></span>
+        </label>
+        <div class="row">
+          <button type="submit" class="primary">Save</button>
+          <button type="button" id="meal-form-reset">Clear</button>
+        </div>
+      </form>
+
+      <div class="filter-row">
+        <input id="meals-search" placeholder="Search meals…" />
+        <div id="meals-filter-tags" class="tag-chips"></div>
+      </div>
+
+      <div id="meals-list" class="meal-gallery"></div>
+    </section>
+  </main>
+
+  <!-- ====== Meal picker dialog used by the Plan grid ====== -->
+  <dialog id="meal-picker">
+    <form method="dialog">
+      <h3>Pick a meal</h3>
+      <input id="meal-picker-search" placeholder="Search…" autocomplete="off" />
+      <ul id="meal-picker-list" class="meal-picker-list"></ul>
+      <div class="row">
+        <button value="cancel">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

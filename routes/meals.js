@@ -1,0 +1,237 @@
+// CRUD for meals + tag filtering + "pick a meal" random selector.
+
+const express = require('express');
+const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
+const { db, setMealTags, attachTagsToMeals, bulkImportMeals, DATA_DIR } = require('../db');
+
+const router = express.Router();
+
+const PHOTO_DIR = path.join(DATA_DIR, 'photos');
+fs.mkdirSync(PHOTO_DIR, { recursive: true });
+
+const MIME_EXT = {
+  'image/jpeg': 'jpg',
+  'image/jpg':  'jpg',
+  'image/png':  'png',
+  'image/webp': 'webp',
+  'image/gif':  'gif',
+  'image/heic': 'heic',
+  'image/heif': 'heif',
+};
+const MAX_PHOTO_BYTES = 15 * 1024 * 1024; // 15 MB
+
+// Builds the JOIN + WHERE + GROUP HAVING fragment for tag filtering.
+// Returns { sql, params } that callers append after `FROM meals m`.
+function tagFilterFragment(tags) {
+  if (!tags.length) return { sql: '', params: [], group: '' };
+  const placeholders = tags.map(() => '?').join(',');
+  return {
+    sql: `
+      JOIN meal_tags mt ON mt.meal_id = m.id
+      JOIN tags t       ON t.id = mt.tag_id
+      WHERE t.name IN (${placeholders}) COLLATE NOCASE
+    `,
+    params: tags,
+    group: ` GROUP BY m.id HAVING COUNT(DISTINCT t.name) = ${tags.length} `,
+  };
+}
+
+// GET /api/meals?tag=healthy&tag=quick&q=chicken
+// Returns all meals with their tags. Optional filters: ?tag= (repeatable, AND), ?q= name search.
+router.get('/', (req, res) => {
+  const tags = [].concat(req.query.tag || []).filter(Boolean);
+  const q = (req.query.q || '').trim();
+
+  let sql = 'SELECT m.* FROM meals m';
+  const params = [];
+  const where = [];
+
+  if (tags.length) {
+    sql += `
+      JOIN meal_tags mt ON mt.meal_id = m.id
+      JOIN tags t       ON t.id = mt.tag_id
+    `;
+    where.push(`t.name IN (${tags.map(() => '?').join(',')}) COLLATE NOCASE`);
+    params.push(...tags);
+  }
+  if (q) {
+    where.push('m.name LIKE ?');
+    params.push(`%${q}%`);
+  }
+  if (where.length) sql += ' WHERE ' + where.join(' AND ');
+  if (tags.length) {
+    sql += ' GROUP BY m.id HAVING COUNT(DISTINCT t.name) = ?';
+    params.push(tags.length);
+  }
+  sql += ' ORDER BY m.name COLLATE NOCASE';
+
+  const meals = db.prepare(sql).all(...params);
+  res.json(attachTagsToMeals(meals));
+});
+
+// GET /api/meals/random?tag=healthy&avoid_days=14
+// Returns one randomly-chosen meal that matches the filters and was NOT eaten
+// in the last `avoid_days` days (default 14, 0 disables).
+router.get('/random', (req, res) => {
+  const tags = [].concat(req.query.tag || []).filter(Boolean);
+  const avoidDays = Math.max(0, parseInt(req.query.avoid_days ?? '14', 10) || 0);
+  const frag = tagFilterFragment(tags);
+
+  let sql = `SELECT m.* FROM meals m ${frag.sql}`;
+  const params = [...frag.params];
+
+  if (avoidDays > 0) {
+    const clause = `
+      m.id NOT IN (
+        SELECT meal_id FROM entries
+        WHERE status = 'eaten' AND on_date >= date('now', 'localtime', ?)
+      )
+    `;
+    sql += frag.sql ? ` AND ${clause}` : ` WHERE ${clause}`;
+    params.push(`-${avoidDays} days`);
+  }
+  sql += `${frag.group} ORDER BY RANDOM() LIMIT 1`;
+
+  let meal = db.prepare(sql).get(...params);
+  // Fallback: if avoidance filtered everything out, retry without it so we
+  // still return *something* rather than a dead end.
+  if (!meal && avoidDays > 0) {
+    const retry = `SELECT m.* FROM meals m ${frag.sql} ${frag.group} ORDER BY RANDOM() LIMIT 1`;
+    meal = db.prepare(retry).get(...frag.params);
+    if (meal) meal._fallback = 'avoidance window relaxed';
+  }
+  if (!meal) return res.status(404).json({ error: 'no meals match' });
+  attachTagsToMeals([meal]);
+  res.json(meal);
+});
+
+// GET /api/meals/new?tag=healthy
+// "Try something new": prefer meals never eaten, then meals not eaten in the
+// longest time. Tag filters apply. Random tiebreak among equally-stale candidates.
+router.get('/new', (req, res) => {
+  const tags = [].concat(req.query.tag || []).filter(Boolean);
+  const frag = tagFilterFragment(tags);
+
+  // LEFT JOIN entries so meals with zero history get NULL last_eaten -> rank first.
+  const parts = [`SELECT m.*, MAX(e.on_date) AS last_eaten FROM meals m`];
+  if (frag.sql) parts.push(frag.sql);
+  parts.push(`LEFT JOIN entries e ON e.meal_id = m.id AND e.status = 'eaten'`);
+  parts.push(`GROUP BY m.id`);
+  if (tags.length) parts.push(`HAVING COUNT(DISTINCT t.name) = ${tags.length}`);
+  parts.push(`ORDER BY (last_eaten IS NULL) DESC, last_eaten ASC, RANDOM() LIMIT 1`);
+  const sql = parts.join('\n');
+
+  const meal = db.prepare(sql).get(...frag.params);
+  if (!meal) return res.status(404).json({ error: 'no meals match' });
+  // Hide the join-only column from the JSON response.
+  delete meal.last_eaten;
+  attachTagsToMeals([meal]);
+  res.json(meal);
+});
+
+// POST /api/meals/bulk  { meals: [{name, tags?, notes?}], merge_tags?: bool }
+// Idempotent bulk import. Existing names get tags merged; brand-new names inserted.
+router.post('/bulk', (req, res) => {
+  const list = Array.isArray(req.body?.meals) ? req.body.meals : null;
+  if (!list) return res.status(400).json({ error: 'meals array required' });
+  const summary = bulkImportMeals(list, { mergeTags: req.body.merge_tags !== false });
+  res.json(summary);
+});
+
+// GET /api/meals/:id
+router.get('/:id', (req, res) => {
+  const meal = db.prepare('SELECT * FROM meals WHERE id = ?').get(req.params.id);
+  if (!meal) return res.status(404).json({ error: 'not found' });
+  attachTagsToMeals([meal]);
+  res.json(meal);
+});
+
+// POST /api/meals  { name, notes?, tags?: [string] }
+router.post('/', (req, res) => {
+  const { name, notes = '', tags = [] } = req.body || {};
+  if (!name || !name.trim()) return res.status(400).json({ error: 'name required' });
+  try {
+    const info = db.prepare('INSERT INTO meals (name, notes) VALUES (?, ?)').run(name.trim(), notes);
+    setMealTags(info.lastInsertRowid, tags);
+    const meal = db.prepare('SELECT * FROM meals WHERE id = ?').get(info.lastInsertRowid);
+    attachTagsToMeals([meal]);
+    res.status(201).json(meal);
+  } catch (err) {
+    if (String(err).includes('UNIQUE')) return res.status(409).json({ error: 'meal already exists' });
+    throw err;
+  }
+});
+
+// PUT /api/meals/:id  { name?, notes?, tags? }
+router.put('/:id', (req, res) => {
+  const meal = db.prepare('SELECT * FROM meals WHERE id = ?').get(req.params.id);
+  if (!meal) return res.status(404).json({ error: 'not found' });
+  const { name, notes, tags } = req.body || {};
+  const newName = (name ?? meal.name).trim();
+  const newNotes = notes ?? meal.notes;
+  try {
+    db.prepare(`UPDATE meals SET name = ?, notes = ?, updated_at = datetime('now') WHERE id = ?`)
+      .run(newName, newNotes, meal.id);
+  } catch (err) {
+    if (String(err).includes('UNIQUE')) return res.status(409).json({ error: 'name already in use' });
+    throw err;
+  }
+  if (Array.isArray(tags)) setMealTags(meal.id, tags);
+  const updated = db.prepare('SELECT * FROM meals WHERE id = ?').get(meal.id);
+  attachTagsToMeals([updated]);
+  res.json(updated);
+});
+
+// POST /api/meals/:id/photos  { data: 'data:image/...;base64,....' }  or { data, mime }
+router.post('/:id/photos', (req, res) => {
+  const meal = db.prepare('SELECT id FROM meals WHERE id = ?').get(req.params.id);
+  if (!meal) return res.status(404).json({ error: 'meal not found' });
+
+  let { data, mime } = req.body || {};
+  if (!data || typeof data !== 'string') return res.status(400).json({ error: 'data required' });
+
+  // Accept either a data URL or raw base64 + explicit mime.
+  const m = /^data:([^;]+);base64,(.+)$/.exec(data);
+  let b64;
+  if (m) { mime = m[1].toLowerCase(); b64 = m[2]; }
+  else   { b64 = data; mime = (mime || '').toLowerCase(); }
+
+  const ext = MIME_EXT[mime];
+  if (!ext) return res.status(415).json({ error: 'unsupported image type' });
+
+  let buf;
+  try { buf = Buffer.from(b64, 'base64'); }
+  catch { return res.status(400).json({ error: 'invalid base64' }); }
+  if (!buf.length) return res.status(400).json({ error: 'empty image' });
+  if (buf.length > MAX_PHOTO_BYTES) return res.status(413).json({ error: 'image too large' });
+
+  const filename = `${crypto.randomUUID()}.${ext}`;
+  fs.writeFileSync(path.join(PHOTO_DIR, filename), buf);
+
+  const maxRow = db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM meal_photos WHERE meal_id = ?').get(meal.id);
+  const sort_order = (maxRow?.m ?? -1) + 1;
+  const info = db.prepare('INSERT INTO meal_photos (meal_id, filename, sort_order) VALUES (?, ?, ?)')
+                 .run(meal.id, filename, sort_order);
+  res.status(201).json({ id: info.lastInsertRowid, filename, url: `/photos/${filename}` });
+});
+
+// DELETE /api/meals/:id/photos/:photoId
+router.delete('/:id/photos/:photoId', (req, res) => {
+  const row = db.prepare('SELECT id, filename FROM meal_photos WHERE id = ? AND meal_id = ?')
+                .get(req.params.photoId, req.params.id);
+  if (!row) return res.status(404).json({ error: 'not found' });
+  db.prepare('DELETE FROM meal_photos WHERE id = ?').run(row.id);
+  try { fs.unlinkSync(path.join(PHOTO_DIR, row.filename)); } catch {}
+  res.json({ ok: true });
+});
+
+// DELETE /api/meals/:id
+router.delete('/:id', (req, res) => {
+  const info = db.prepare('DELETE FROM meals WHERE id = ?').run(req.params.id);
+  if (!info.changes) return res.status(404).json({ error: 'not found' });
+  res.json({ ok: true });
+});
+
+module.exports = router;

@@ -1,0 +1,21 @@
+# docker-compose.yml — run web-menu locally or on your server.
+#
+#   cp .env.example .env   # then edit
+#   docker compose up -d --build
+#
+# To expose via Cloudflare Tunnel, point the tunnel at http://web-menu:3000
+# (if running cloudflared in the same compose network) or http://localhost:3000.
+
+services:
+  web-menu:
+    build: .
+    image: web-menu:latest
+    container_name: web-menu
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - TZ=America/Los_Angeles
+    ports:
+      - "127.0.0.1:3000:3000"   # bind to loopback only; Cloudflare tunnel reaches it from the host
+    volumes:
+      - ./data:/data
