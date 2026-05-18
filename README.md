@@ -1,18 +1,25 @@
-# 🍽️ web-menu
+# 🍽️ yes-chef
 
-A self-hosted meal planner and history log. Pick something to eat, plan the week ahead, track what you've had, and grow a personal database of household favourites — all from a clean web UI running in Docker.
+> **Your Smart Menu Planner**
+
+A self-hosted meal planner with a scoring-based meal picker, photo-aware AI nutrition analysis, and a clean agent API so autonomous AI assistants can push reminders, recommend meals, and help you plan the week — all from a single-container Docker app.
+
+Repository: <https://github.com/josephisaac91/web-menu> · See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ---
 
 ## Features
 
-- **🎲 Pick a meal** — filter your meal list by tag, roll a random pick, and skip anything eaten in the last *N* days
+- **🎲 Pick a meal** — tag filter, recency-aware scoring algorithm with a tunable **variety** knob (0 = pure random → 1 = strongly prefer novel / under-eaten meals)
 - **✨ Try something new** — surfaces meals you've never eaten first, then the longest-ago ones
-- **📅 Weekly planner** — 7-day grid with breakfast / lunch / dinner slots; mark planned meals as eaten in one click
-- **📜 History** — a running log of everything you've eaten, newest first
-- **🏷️ Tags** — free-form metadata per meal (`eat out`, `home cook`, `healthy`, `quick`, etc.)
-- **📥 CSV import** — bulk-import a food log from a spreadsheet; idempotent so re-running is safe
-- **🔒 Simple auth** — shared household password; optional Google OAuth for Gmail sign-in
+- **📋 Top-N recommendations** — preview the 5 best picks ranked by the algorithm
+- **📅 Adaptive planner** — 1 / 2 / 3 / 5 / 7-day views with separate Lunch + Veg side slots
+- **📜 History calendar** — monthly calendar plus a stats panel (variety index, streak, top meals, breakdowns by slot / tag / month)
+- **🤖 Agent API** — Bearer-token gated endpoints under `/api/v1/agent/*` for autonomous AI agents (reminders, recommendations, state snapshots, photo analysis)
+- **🧠 AI photo analysis** — pluggable vision provider (OpenAI / Anthropic / Ollama) auto-tags meals and estimates nutrition (calories, macros, portion)
+- **🏷️ Tags** — free-form metadata per meal; manage / rename / delete from the Meals tab
+- **📥 CSV import** — bulk-import a food log; idempotent
+- **🔒 Auth** — shared household password (with 5-strike / 24-hour lockout), optional Google OAuth
 - **🐳 Docker-first** — single container, SQLite database, no external services required
 
 ---
@@ -33,8 +40,8 @@ A self-hosted meal planner and history log. Pick something to eat, plan the week
 ## Quick start (local, no Docker)
 
 ```bash
-git clone https://github.com/your-username/web-menu.git
-cd web-menu
+git clone https://github.com/josephisaac91/web-menu.git yes-chef
+cd yes-chef
 cp .env.example .env        # edit APP_PASSWORD, SESSION_SECRET, SECURE_COOKIES=false
 npm install
 npm start
@@ -48,8 +55,8 @@ npm start
 ### Build and run
 
 ```bash
-git clone https://github.com/your-username/web-menu.git
-cd web-menu
+git clone https://github.com/josephisaac91/web-menu.git yes-chef
+cd yes-chef
 cp .env.example .env        # edit values — see Environment variables below
 docker compose up -d --build
 # open http://localhost:3000
@@ -60,10 +67,10 @@ Data is stored in `./data/` (SQLite + session files). Back up by copying that fo
 ### Build the image manually (no compose)
 
 ```bash
-docker build -t web-menu:latest .
+docker build -t yes-chef:latest .
 ```
 
-> **Note:** Always include `-t web-menu:latest` — without it the image is only reachable by its SHA digest.
+> **Note:** Always include `-t yes-chef:latest` — without it the image is only reachable by its SHA digest.
 
 ---
 
@@ -77,8 +84,8 @@ From your local machine (replace `user` and `server-ip`):
 
 ```bash
 rsync -av --exclude='node_modules' --exclude='data' --exclude='.git' \
-  /path/to/web-menu/ \
-  user@server-ip:/opt/stacks/web-menu/
+  /path/to/yes-chef/ \
+  user@server-ip:/opt/stacks/yes-chef/
 ```
 
 ### 2 — Set environment variables
@@ -89,8 +96,8 @@ Create your `.env` **or** paste the `environment:` block directly into Dockge's 
 
 ```bash
 ssh user@server-ip
-cd /opt/stacks/web-menu        # or wherever you copied the files
-docker build -t web-menu:latest .
+cd /opt/stacks/yes-chef        # or wherever you copied the files
+docker build -t yes-chef:latest .
 ```
 
 ### 4 — Compose file for Dockge
@@ -99,9 +106,9 @@ Paste this into Dockge's editor (adjust the data path if you want a specific Tru
 
 ```yaml
 services:
-  web-menu:
-    image: web-menu:latest
-    container_name: web-menu
+  yes-chef:
+    image: yes-chef:latest
+    container_name: yes-chef
     user: "root"
     restart: unless-stopped
     environment:
@@ -110,10 +117,11 @@ services:
       - SECURE_COOKIES=false      # set true only after HTTPS / Cloudflare Tunnel is live
       - DATA_DIR=/data
       - PORT=3000
+      - TZ=America/Los_Angeles
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
-      - /opt/stacks/web-menu/data:/data   # or a TrueNAS dataset path
+      - /opt/stacks/yes-chef/data:/data   # or a TrueNAS dataset path
 ```
 
 Hit **Start** in Dockge.
@@ -122,8 +130,8 @@ Hit **Start** in Dockge.
 
 ```bash
 rsync -av --exclude='node_modules' --exclude='data' --exclude='.git' \
-  /path/to/web-menu/ user@server-ip:/opt/stacks/web-menu/
-ssh user@server-ip "cd /opt/stacks/web-menu && docker build -t web-menu:latest ."
+  /path/to/yes-chef/ user@server-ip:/opt/stacks/yes-chef/
+ssh user@server-ip "cd /opt/stacks/yes-chef && docker build -t yes-chef:latest ."
 # then Restart in Dockge
 ```
 
@@ -138,7 +146,7 @@ The compose file binds only to `127.0.0.1:3000` so the app is not directly reach
 1. Install `cloudflared` on the host and authenticate:
    ```bash
    cloudflared tunnel login
-   cloudflared tunnel create web-menu
+   cloudflared tunnel create yes-chef
    ```
 
 2. Create `~/.cloudflared/config.yml`:
@@ -153,8 +161,8 @@ The compose file binds only to `127.0.0.1:3000` so the app is not directly reach
 
 3. Route DNS and start:
    ```bash
-   cloudflared tunnel route dns web-menu menu.yourdomain.com
-   cloudflared tunnel run web-menu
+   cloudflared tunnel route dns yes-chef menu.yourdomain.com
+   cloudflared tunnel run yes-chef
    ```
 
 4. Once the tunnel is live, set `SECURE_COOKIES=true` and restart the container — session cookies will now be sent only over HTTPS.
@@ -218,7 +226,7 @@ npm run import -- --dry-run           # preview only, no writes
 npm run import -- --replace-tags      # overwrite tags instead of merging
 
 # inside a running container
-docker exec web-menu node scripts/import-csv.js
+docker exec yes-chef node scripts/import-csv.js
 ```
 
 ### CSV format
@@ -300,29 +308,133 @@ Planning and history share the `entries` table — only `status` differs, making
 ## Project structure
 
 ```
-web-menu/
-├── server.js               Express app, session, auth wiring
-├── db.js                   SQLite schema + helper functions
+yes-chef/
+├── server.js                 Express app, session, auth wiring
+├── db.js                     SQLite schema + helper functions (auto-migrates legacy db file)
 ├── middleware/
-│   └── auth.js             Session gate (redirect HTML / 401 JSON)
+│   ├── auth.js               Session gate (redirect HTML / 401 JSON)
+│   └── agent-auth.js         Bearer-token OR session auth for /api/v1/agent/*
 ├── routes/
-│   ├── auth.js             Password login / logout
-│   ├── oauth.js            Google OAuth (optional)
-│   ├── meals.js            Meals CRUD + random + new + bulk import
-│   ├── tags.js             Tags CRUD
-│   └── entries.js          Planned & eaten entries
+│   ├── auth.js               Password login / logout (with 5-strike / 24h lockout)
+│   ├── oauth.js              Google OAuth (optional)
+│   ├── meals.js              Meals CRUD + smart picker + photos + nutrition
+│   ├── tags.js               Tags CRUD
+│   ├── entries.js            Planned & eaten entries
+│   └── agent.js              Agent API: stats, recommendations, notes, photo AI
+├── lib/
+│   ├── pick-algorithm.js     Variety-tunable scoring picker
+│   └── ai-provider.js        Pluggable vision provider (OpenAI / Anthropic / Ollama)
 ├── public/
-│   ├── index.html          App shell (4 tabs)
-│   ├── login.html          Login page
-│   ├── app.js              Vanilla JS SPA
-│   └── style.css           Styles (light + dark mode)
+│   ├── index.html            App shell (4 tabs + notes banner)
+│   ├── login.html            Login page
+│   ├── app.js                Vanilla JS SPA
+│   └── style.css             Styles (light + dark mode)
 ├── scripts/
-│   └── import-csv.js       CLI bulk importer
-├── food-log.example.csv    Example CSV format
+│   └── import-csv.js         CLI bulk importer
+├── food-log.example.csv      Example CSV format
+├── CHANGELOG.md
 ├── Dockerfile
 ├── docker-compose.yml
 └── .env.example
 ```
+
+---
+
+## Agent API (autonomous AI integration)
+
+Set one or more long random tokens to enable bearer-auth access for external agents (Claude Dispatch, Hermes, OpenClaw, scripts, etc.):
+
+```env
+AGENT_API_TOKENS=token-a,token-b
+```
+
+All endpoints live under `/api/v1/agent/*` and accept either a browser session **or** `Authorization: Bearer <token>`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET   | `/api/v1/agent/spec`            | Self-description (capabilities + AI status) |
+| GET   | `/api/v1/agent/state?back=14&forward=7` | Recent + upcoming entries, "needs planning" days, unread notes |
+| GET   | `/api/v1/agent/stats?days=365`  | Variety index, streak, top meals, breakdowns |
+| GET   | `/api/v1/agent/recommendations?variety=0.7&n=5&tag=quick` | Top-N picks from the scoring algorithm |
+| GET   | `/api/v1/agent/notes`           | List notes (`?unread=1`, `?dismissed=0`) |
+| POST  | `/api/v1/agent/notes`           | Push a reminder: `{ kind, text, due_date?, meta? }` |
+| PATCH | `/api/v1/agent/notes/:id`       | `{ read: true }` or `{ dismissed: true }` |
+| DELETE| `/api/v1/agent/notes/:id`       | Delete a note |
+| POST  | `/api/v1/agent/photos/:photoId/analyze` | Run vision provider on a meal photo |
+| POST  | `/api/v1/agent/photos/:photoId/apply`   | Apply analysis to the meal: `{ tags?, nutrition?, description? }` |
+
+**Note kinds** are `info`, `reminder`, `recommendation`, `warning`. Notes appear as a dismissable banner across the top of the web UI, so an agent that posts *"Take chicken out of freezer for tomorrow"* surfaces to the user immediately.
+
+### Example: weekly planning reminder cron
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"kind":"reminder","text":"Plan next week — 4 unplanned days","due_date":"2026-05-19"}' \
+  https://menu.example.com/api/v1/agent/notes
+```
+
+### Example: agent asks for recommendations
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://menu.example.com/api/v1/agent/recommendations?variety=0.75&n=5&tag=quick"
+```
+
+---
+
+## AI photo analysis
+
+The Meals view shows a 🤖 button on each photo when an AI provider is configured. Click it to analyze the image and get back structured JSON:
+
+```json
+{
+  "description": "Pan-seared salmon with asparagus and quinoa",
+  "dish_name": "Salmon bowl",
+  "cuisine": "modern american",
+  "ingredients": ["salmon", "asparagus", "quinoa", "lemon"],
+  "tags": ["healthy", "high-protein", "gluten-free"],
+  "portion": { "size": "medium", "estimated_grams": 350 },
+  "nutrition": { "calories": 520, "protein_g": 38, "carbs_g": 32, "fat_g": 24, "fiber_g": 6, "sodium_mg": 480 },
+  "confidence": 0.82
+}
+```
+
+You can then one-click apply the tags, nutrition, and/or description to the meal record.
+
+### Configure a provider
+
+```env
+# Cloud — OpenAI (vision)
+AI_PROVIDER=openai
+AI_API_KEY=sk-...
+AI_MODEL=gpt-4o-mini
+
+# Cloud — Anthropic (Claude with vision)
+AI_PROVIDER=anthropic
+AI_API_KEY=sk-ant-...
+AI_MODEL=claude-3-5-sonnet-latest
+
+# Local — Ollama running a vision model (no key required)
+AI_PROVIDER=ollama
+AI_BASE_URL=http://host.docker.internal:11434
+AI_MODEL=llava
+```
+
+Adding more providers is a ~30-line addition to `lib/ai-provider.js` — all providers conform to the same JSON schema.
+
+---
+
+## Pick algorithm — variety scoring
+
+Each candidate meal is scored on three signals, then weighted-random sampled:
+
+- **Recency** — days since last eaten (saturates at 90)
+- **Rarity** — eaten less than its 1/N "fair share" of total entries
+- **Novelty** — flat bonus for never-eaten meals
+
+The `variety` slider linearly blends a uniform-weight distribution (0.0) with the variety score (1.0). The avoid-days window is applied as a hard filter, with automatic relaxation if it empties the candidate pool.
+
+See `lib/pick-algorithm.js` for the implementation.
 
 ---
 

@@ -1,7 +1,7 @@
 {
-  "name": "web-menu",
-  "version": "0.1.0",
-  "description": "Meal picker, planner, and history log for two.",
+  "name": "yes-chef",
+  "version": "0.2.0",
+  "description": "yes-chef — Your Smart Menu Planner. Meal picker, planner, history, AI photo analysis & agent API.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
