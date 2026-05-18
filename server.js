@@ -1,4 +1,4 @@
-// Web-menu: meal picker / planner / history for two.
+// yes-chef: Your Smart Menu Planner. Meal picker, planner, history & AI photo analysis.
 // Express + SQLite + plain-HTML SPA. Single process; data lives under DATA_DIR.
 
 require('dotenv').config();
@@ -10,12 +10,14 @@ const session = require('express-session');
 const FileStore = require('session-file-store')(session);
 const bcrypt = require('bcryptjs');
 
-const { requireAuth } = require('./middleware/auth');
+const { requireAuth }  = require('./middleware/auth');
+const { agentAuth }    = require('./middleware/agent-auth');
 const buildAuthRouter  = require('./routes/auth');
 const buildOAuthRouter = require('./routes/oauth');
 const mealsRouter      = require('./routes/meals');
 const tagsRouter       = require('./routes/tags');
 const entriesRouter    = require('./routes/entries');
+const agentRouter      = require('./routes/agent');
 
 const PORT           = parseInt(process.env.PORT || '3000', 10);
 const DATA_DIR       = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -45,7 +47,7 @@ app.use(session({
     retries: 1,
     logFn: () => {},
   }),
-  name: 'web_menu_sid',
+  name: 'yes_chef_sid',
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
@@ -65,7 +67,11 @@ app.use('/auth',  buildOAuthRouter()); // adds /auth/google and /auth/google/cal
 app.get('/login',     (_req, res) => res.sendFile(path.join(__dirname, 'public', 'login.html')));
 app.get('/style.css', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'style.css')));
 
-// Everything below requires login.
+// Agent API: bearer-token OR session auth. Mounted before requireAuth
+// so that token-only requests don't get bounced to /login.
+app.use('/api/v1/agent', agentAuth, agentRouter);
+
+// Everything below requires browser login.
 app.use(requireAuth);
 
 app.use('/api/meals',   mealsRouter);
@@ -91,5 +97,5 @@ app.use((err, req, res, _next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`web-menu listening on :${PORT}  (data in ${DATA_DIR})`);
+  console.log(`yes-chef listening on :${PORT}  (data in ${DATA_DIR})`);
 });

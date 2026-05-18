@@ -1,16 +1,16 @@
-# docker-compose.yml — run web-menu locally or on your server.
+# docker-compose.yml — run yes-chef locally or on your server.
 #
 #   cp .env.example .env   # then edit
 #   docker compose up -d --build
 #
-# To expose via Cloudflare Tunnel, point the tunnel at http://web-menu:3000
+# To expose via Cloudflare Tunnel, point the tunnel at http://yes-chef:3000
 # (if running cloudflared in the same compose network) or http://localhost:3000.
 
 services:
-  web-menu:
+  yes-chef:
     build: .
-    image: web-menu:latest
-    container_name: web-menu
+    image: yes-chef:latest
+    container_name: yes-chef
     restart: unless-stopped
     env_file: .env
     environment:

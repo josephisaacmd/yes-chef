@@ -3,12 +3,15 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Menu</title>
+  <title>yes-chef — Your Smart Menu Planner</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
   <header class="topbar">
-    <h1>🍽️ Menu</h1>
+    <h1 class="brand">
+      <span class="brand-name">🍽️ yes-chef</span>
+      <span class="brand-tag">Your Smart Menu Planner</span>
+    </h1>
     <nav>
       <button class="tab" data-tab="pick">Pick</button>
       <button class="tab" data-tab="plan">Plan</button>
@@ -17,6 +20,9 @@
     </nav>
     <form id="logout-form"><button class="link" type="submit">Sign out</button></form>
   </header>
+
+  <!-- Banner for unread agent notes / reminders. Populated by app.js. -->
+  <div id="notes-banner" class="notes-banner" hidden></div>
 
   <main>
     <!-- ============ PICK ============ -->
@@ -32,9 +38,18 @@
           <input type="number" id="pick-avoid" min="0" max="365" value="14" style="width:5rem" />
           days
         </label>
+        <label style="flex:1; min-width:200px;">
+          Variety <span id="variety-value" class="muted" style="font-weight:600">0.5</span>
+          <input type="range" id="pick-variety" min="0" max="1" step="0.05" value="0.5" />
+          <span class="muted" style="font-size:.75rem">0 = pure random · 1 = prefer new / under-eaten</span>
+        </label>
+      </div>
+      <div class="row pick-actions">
         <button id="pick-roll" class="primary">🎲 Pick a meal</button>
         <button id="pick-new">✨ Try something new</button>
+        <button id="pick-show-recs">📋 Show top 5</button>
       </div>
+      <div id="pick-recommendations" class="recommendations" hidden></div>
 
       <div id="pick-result" class="card pick-result" hidden>
         <h3 id="pick-name"></h3>
@@ -95,6 +110,14 @@
           <button id="history-next" title="Next month">›</button>
         </div>
       </div>
+
+      <details class="card" id="stats-card" open>
+        <summary><strong>📊 Stats</strong> <span id="stats-summary" class="muted"></span></summary>
+        <div id="stats-body" class="stats-body">
+          <p class="muted">Loading…</p>
+        </div>
+      </details>
+
       <p class="muted">Everything we've eaten, by month.</p>
       <div id="history-calendar" class="history-calendar"></div>
     </section>
@@ -142,6 +165,17 @@
           <input type="file" id="meal-photo-input" accept="image/*" multiple />
           <span id="meal-photo-status" class="muted" style="font-size:.8rem"></span>
         </label>
+        <details id="nutrition-section">
+          <summary><strong>Nutrition</strong> <span id="nutrition-summary" class="muted"></span></summary>
+          <div class="nutrition-grid">
+            <label>Calories <input type="number" name="n_calories" step="1" min="0" /></label>
+            <label>Protein (g) <input type="number" name="n_protein" step="0.1" min="0" /></label>
+            <label>Carbs (g) <input type="number" name="n_carbs" step="0.1" min="0" /></label>
+            <label>Fat (g) <input type="number" name="n_fat" step="0.1" min="0" /></label>
+            <label>Fiber (g) <input type="number" name="n_fiber" step="0.1" min="0" /></label>
+            <label>Sodium (mg) <input type="number" name="n_sodium" step="1" min="0" /></label>
+          </div>
+        </details>
         <div class="row">
           <button type="submit" class="primary">Save</button>
           <button type="button" id="meal-form-reset">Clear</button>

@@ -4,7 +4,8 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { db, setMealTags, attachTagsToMeals, bulkImportMeals, DATA_DIR } = require('../db');
+const { db, setMealTags, attachTagsToMeals, bulkImportMeals, safeJSON, DATA_DIR } = require('../db');
+const { pickMeals } = require('../lib/pick-algorithm');
 
 const router = express.Router();
 
@@ -71,39 +72,19 @@ router.get('/', (req, res) => {
   res.json(attachTagsToMeals(meals));
 });
 
-// GET /api/meals/random?tag=healthy&avoid_days=14
-// Returns one randomly-chosen meal that matches the filters and was NOT eaten
-// in the last `avoid_days` days (default 14, 0 disables).
+// GET /api/meals/random?tag=healthy&avoid_days=14&variety=0.5
+// Returns one meal selected by the scoring algorithm in lib/pick-algorithm.
+// `variety` ranges 0..1; 0 = pure random, 1 = strongly prefer novel/under-eaten.
 router.get('/random', (req, res) => {
   const tags = [].concat(req.query.tag || []).filter(Boolean);
-  const avoidDays = Math.max(0, parseInt(req.query.avoid_days ?? '14', 10) || 0);
-  const frag = tagFilterFragment(tags);
+  const avoid_days = parseInt(req.query.avoid_days ?? '14', 10);
+  const variety = parseFloat(req.query.variety ?? '0.5');
 
-  let sql = `SELECT m.* FROM meals m ${frag.sql}`;
-  const params = [...frag.params];
-
-  if (avoidDays > 0) {
-    const clause = `
-      m.id NOT IN (
-        SELECT meal_id FROM entries
-        WHERE status = 'eaten' AND on_date >= date('now', 'localtime', ?)
-      )
-    `;
-    sql += frag.sql ? ` AND ${clause}` : ` WHERE ${clause}`;
-    params.push(`-${avoidDays} days`);
-  }
-  sql += `${frag.group} ORDER BY RANDOM() LIMIT 1`;
-
-  let meal = db.prepare(sql).get(...params);
-  // Fallback: if avoidance filtered everything out, retry without it so we
-  // still return *something* rather than a dead end.
-  if (!meal && avoidDays > 0) {
-    const retry = `SELECT m.* FROM meals m ${frag.sql} ${frag.group} ORDER BY RANDOM() LIMIT 1`;
-    meal = db.prepare(retry).get(...frag.params);
-    if (meal) meal._fallback = 'avoidance window relaxed';
-  }
-  if (!meal) return res.status(404).json({ error: 'no meals match' });
-  attachTagsToMeals([meal]);
+  const { picks, fallback } = pickMeals({ tags, variety, avoidDays: avoid_days, limit: 1 });
+  if (!picks.length) return res.status(404).json({ error: 'no meals match' });
+  attachTagsToMeals(picks);
+  const meal = picks[0];
+  if (fallback) meal._fallback = fallback;
   res.json(meal);
 });
 
@@ -148,12 +129,13 @@ router.get('/:id', (req, res) => {
   res.json(meal);
 });
 
-// POST /api/meals  { name, notes?, tags?: [string] }
+// POST /api/meals  { name, notes?, tags?: [string], nutrition?: object }
 router.post('/', (req, res) => {
-  const { name, notes = '', tags = [] } = req.body || {};
+  const { name, notes = '', tags = [], nutrition = null } = req.body || {};
   if (!name || !name.trim()) return res.status(400).json({ error: 'name required' });
   try {
-    const info = db.prepare('INSERT INTO meals (name, notes) VALUES (?, ?)').run(name.trim(), notes);
+    const info = db.prepare('INSERT INTO meals (name, notes, nutrition_json) VALUES (?, ?, ?)')
+      .run(name.trim(), notes, nutrition && typeof nutrition === 'object' ? JSON.stringify(nutrition) : null);
     setMealTags(info.lastInsertRowid, tags);
     const meal = db.prepare('SELECT * FROM meals WHERE id = ?').get(info.lastInsertRowid);
     attachTagsToMeals([meal]);
@@ -164,16 +146,20 @@ router.post('/', (req, res) => {
   }
 });
 
-// PUT /api/meals/:id  { name?, notes?, tags? }
+// PUT /api/meals/:id  { name?, notes?, tags?, nutrition? }
 router.put('/:id', (req, res) => {
   const meal = db.prepare('SELECT * FROM meals WHERE id = ?').get(req.params.id);
   if (!meal) return res.status(404).json({ error: 'not found' });
-  const { name, notes, tags } = req.body || {};
-  const newName = (name ?? meal.name).trim();
+  const { name, notes, tags, nutrition } = req.body || {};
+  const newName  = (name ?? meal.name).trim();
   const newNotes = notes ?? meal.notes;
+  let newNutritionJson = meal.nutrition_json;
+  if (nutrition !== undefined) {
+    newNutritionJson = nutrition && typeof nutrition === 'object' ? JSON.stringify(nutrition) : null;
+  }
   try {
-    db.prepare(`UPDATE meals SET name = ?, notes = ?, updated_at = datetime('now') WHERE id = ?`)
-      .run(newName, newNotes, meal.id);
+    db.prepare(`UPDATE meals SET name = ?, notes = ?, nutrition_json = ?, updated_at = datetime('now') WHERE id = ?`)
+      .run(newName, newNotes, newNutritionJson, meal.id);
   } catch (err) {
     if (String(err).includes('UNIQUE')) return res.status(409).json({ error: 'name already in use' });
     throw err;

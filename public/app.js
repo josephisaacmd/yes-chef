@@ -1,4 +1,4 @@
-// web-menu front-end. Plain JS modules, no framework.
+// yes-chef front-end. Plain JS modules, no framework.
 // Talks to /api/* JSON endpoints; renders four tabbed views.
 
 // ----------------------- tiny helpers -----------------------
@@ -110,10 +110,15 @@ function pickQueryString() {
   return params;
 }
 
+function currentVariety() {
+  return parseFloat($('#pick-variety').value) || 0;
+}
+
 async function rollPick() {
   const params = pickQueryString();
   const avoid = parseInt($('#pick-avoid').value, 10);
   if (Number.isFinite(avoid) && avoid >= 0) params.set('avoid_days', String(avoid));
+  params.set('variety', String(currentVariety()));
   try {
     const meal = await api('/api/meals/random?' + params.toString());
     showPicked(meal);
@@ -128,6 +133,44 @@ async function rollNew() {
     showPicked(meal);
   } catch (err) {
     alert(err.message);
+  }
+}
+
+// Top-N recommendations using the same scoring algorithm.
+async function showRecommendations() {
+  const params = pickQueryString();
+  const avoid = parseInt($('#pick-avoid').value, 10);
+  if (Number.isFinite(avoid) && avoid >= 0) params.set('avoid_days', String(avoid));
+  params.set('variety', String(currentVariety()));
+  params.set('n', '5');
+  const wrap = $('#pick-recommendations');
+  wrap.hidden = false;
+  wrap.innerHTML = '<p class="muted">Thinking…</p>';
+  try {
+    const data = await api('/api/v1/agent/recommendations?' + params.toString());
+    wrap.innerHTML = '';
+    const h = document.createElement('h4');
+    h.textContent = `Top picks (variety ${data.variety.toFixed(2)})`;
+    wrap.appendChild(h);
+    for (const m of data.picks) {
+      const row = document.createElement('div');
+      row.className = 'rec-row';
+      const days = m._days_since == null ? 'never eaten' : `${m._days_since}d ago`;
+      const tagStr = (m.tags || []).map(t => t.name).join(' · ');
+      row.innerHTML = `
+        <div>
+          <div><strong>${escapeHtml(m.name)}</strong></div>
+          <div class="meta">${escapeHtml(days)} · eaten ${m._eaten_count}× ${tagStr ? '· ' + escapeHtml(tagStr) : ''}</div>
+        </div>
+        <button class="primary" data-id="${m.id}">Pick</button>`;
+      row.querySelector('button').addEventListener('click', () => {
+        showPicked(m);
+        wrap.hidden = true;
+      });
+      wrap.appendChild(row);
+    }
+  } catch (err) {
+    wrap.innerHTML = `<p class="error">${err.message}</p>`;
   }
 }
 
@@ -155,6 +198,10 @@ $('#pick-again').addEventListener('click', rollPick);
 $('#pick-new').addEventListener('click', rollNew);
 $('#pick-plan').addEventListener('click', () => logPickAs('planned'));
 $('#pick-eaten').addEventListener('click', () => logPickAs('eaten'));
+$('#pick-show-recs').addEventListener('click', showRecommendations);
+$('#pick-variety').addEventListener('input', () => {
+  $('#variety-value').textContent = currentVariety().toFixed(2);
+});
 
 // ============================================================
 //                          PLAN
@@ -385,7 +432,58 @@ function pickMealDialog() {
 // ============================================================
 let historyAnchor = new Date(); historyAnchor.setDate(1); historyAnchor.setHours(0,0,0,0);
 
+async function renderStats() {
+  const body = $('#stats-body');
+  const summary = $('#stats-summary');
+  try {
+    const s = await api('/api/v1/agent/stats?days=365');
+    summary.textContent = `${s.total_eaten} meals · ${s.unique_meals} unique · variety ${s.variety_index.toFixed(2)} · ${s.streak_days}-day streak`;
+    const top = s.top_meals.slice(0, 5)
+      .map(m => `<li><strong>${escapeHtml(m.name)}</strong> <span class="muted">×${m.count}</span></li>`).join('');
+    const tags = s.by_tag.slice(0, 8)
+      .map(t => `<span class="chip">${escapeHtml(t.tag)} <span class="muted">×${t.count}</span></span>`).join(' ');
+    const slots = s.by_slot
+      .map(b => `<span class="chip">${escapeHtml(b.slot)} <span class="muted">×${b.count}</span></span>`).join(' ');
+    body.innerHTML = `
+      <div class="stat-row">
+        <div class="stat-card">
+          <div class="stat-label">Total eaten (1y)</div>
+          <div class="stat-num">${s.total_eaten}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Unique meals</div>
+          <div class="stat-num">${s.unique_meals}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Variety index</div>
+          <div class="stat-num">${s.variety_index.toFixed(2)}</div>
+          <div class="muted" style="font-size:.7rem">0 = monotonous · 1 = perfectly varied</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Current streak</div>
+          <div class="stat-num">${s.streak_days}d</div>
+        </div>
+      </div>
+      <div class="stat-section">
+        <h4>Most-eaten</h4>
+        <ol class="top-meals">${top || '<li class="muted">No data yet.</li>'}</ol>
+      </div>
+      <div class="stat-section">
+        <h4>By slot</h4>
+        <div class="tag-chips read-only">${slots || '<span class="muted">No data yet.</span>'}</div>
+      </div>
+      <div class="stat-section">
+        <h4>Most-used tags</h4>
+        <div class="tag-chips read-only">${tags || '<span class="muted">No data yet.</span>'}</div>
+      </div>
+    `;
+  } catch (err) {
+    body.innerHTML = `<p class="error">${err.message}</p>`;
+  }
+}
+
 async function renderHistory() {
+  renderStats();
   const year  = historyAnchor.getFullYear();
   const month = historyAnchor.getMonth();
   const firstOfMonth = new Date(year, month, 1);
@@ -463,13 +561,25 @@ let pendingPhotos = [];
 // Currently-edited meal's photos (server-side ones).
 let currentPhotos = [];
 
+let aiInfo = { enabled: false, provider: 'none' };
+async function refreshAiInfo() {
+  try { const s = await api('/api/v1/agent/spec'); aiInfo = s.ai || aiInfo; }
+  catch { /* not signed in yet, ignore */ }
+}
+
 function renderPhotoManager() {
   const wrap = $('#meal-photos');
   wrap.innerHTML = '';
   for (const p of currentPhotos) {
     const tile = document.createElement('div');
-    tile.className = 'photo-tile';
-    tile.innerHTML = `<img src="${p.url}" alt="" /><button type="button" class="photo-del" title="Remove">✕</button>`;
+    tile.className = 'photo-tile' + (p.analysis ? ' analyzed' : '');
+    const aiBtn = aiInfo.enabled ? '<button type="button" class="photo-ai" title="Analyze with AI">🤖</button>' : '';
+    const badge = p.analysis ? '<span class="photo-analyzed">AI</span>' : '';
+    tile.innerHTML = `
+      <img src="${p.url}" alt="" />
+      ${badge}
+      ${aiBtn}
+      <button type="button" class="photo-del" title="Remove">✕</button>`;
     tile.querySelector('.photo-del').addEventListener('click', async () => {
       const mealId = mealForm.id.value;
       if (mealId) {
@@ -479,6 +589,12 @@ function renderPhotoManager() {
       currentPhotos = currentPhotos.filter(x => x.id !== p.id);
       renderPhotoManager();
       refreshMeals().then(renderMealsList);
+    });
+    if (aiBtn) {
+      tile.querySelector('.photo-ai').addEventListener('click', () => analyzePhoto(p));
+    }
+    tile.querySelector('img').addEventListener('click', () => {
+      if (p.analysis) showAnalysisDialog(p);
     });
     wrap.appendChild(tile);
   }
@@ -537,12 +653,101 @@ $('#meal-photo-input').addEventListener('change', async (e) => {
   }
 });
 
+async function analyzePhoto(photo) {
+  const status = $('#meal-photo-status');
+  status.textContent = `Analyzing with ${aiInfo.provider}…`;
+  try {
+    const result = await api(`/api/v1/agent/photos/${photo.id}/analyze`, { method: 'POST' });
+    // Update in-memory photo with new analysis and re-render.
+    const idx = currentPhotos.findIndex(p => p.id === photo.id);
+    if (idx >= 0) {
+      currentPhotos[idx] = { ...currentPhotos[idx], analysis: result.analysis, analyzed_at: new Date().toISOString() };
+    }
+    renderPhotoManager();
+    status.textContent = 'Analysis complete. Click the photo to view.';
+    showAnalysisDialog(currentPhotos[idx]);
+  } catch (err) {
+    status.textContent = 'AI error: ' + err.message;
+  }
+}
+
+function showAnalysisDialog(photo) {
+  const a = photo.analysis;
+  if (!a) return;
+  const dlg = document.createElement('dialog');
+  dlg.className = 'analysis-dialog';
+  const n = a.nutrition || {};
+  const portion = a.portion || {};
+  dlg.innerHTML = `
+    <form method="dialog">
+      <h3>${escapeHtml(a.dish_name || 'Food analysis')}</h3>
+      <p class="muted">${escapeHtml(a.description || '')}</p>
+      <div class="kv">
+        ${a.cuisine ? `<div><span class="muted">Cuisine:</span> ${escapeHtml(a.cuisine)}</div>` : ''}
+        ${portion.size ? `<div><span class="muted">Portion:</span> ${escapeHtml(portion.size)}${portion.estimated_grams ? ' · ~' + portion.estimated_grams + 'g' : ''}</div>` : ''}
+        ${typeof a.confidence === 'number' ? `<div><span class="muted">Confidence:</span> ${(a.confidence * 100).toFixed(0)}%</div>` : ''}
+      </div>
+      ${(a.tags && a.tags.length) ? `<div class="tag-chips read-only" style="margin:.5rem 0">${a.tags.map(t => `<span class="chip">${escapeHtml(t)}</span>`).join('')}</div>` : ''}
+      <div class="nutrition-grid" style="margin:.5rem 0">
+        ${nutritionRow('Calories', n.calories)}
+        ${nutritionRow('Protein', n.protein_g, 'g')}
+        ${nutritionRow('Carbs', n.carbs_g, 'g')}
+        ${nutritionRow('Fat', n.fat_g, 'g')}
+        ${nutritionRow('Fiber', n.fiber_g, 'g')}
+        ${nutritionRow('Sodium', n.sodium_mg, 'mg')}
+      </div>
+      ${(a.ingredients && a.ingredients.length) ? `<p class="muted" style="font-size:.85rem"><strong>Ingredients:</strong> ${escapeHtml(a.ingredients.join(', '))}</p>` : ''}
+      <div class="row">
+        <button type="button" data-apply="tags">Apply tags</button>
+        <button type="button" data-apply="nutrition">Apply nutrition</button>
+        <button type="button" data-apply="description">Apply description</button>
+        <button type="button" data-apply="all" class="primary">Apply all</button>
+        <button value="cancel">Close</button>
+      </div>
+    </form>`;
+  document.body.appendChild(dlg);
+  dlg.addEventListener('close', () => dlg.remove());
+  dlg.querySelectorAll('[data-apply]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const which = btn.dataset.apply;
+      const body = which === 'all'
+        ? { tags: true, nutrition: true, description: true }
+        : { [which]: true };
+      try {
+        await api(`/api/v1/agent/photos/${photo.id}/apply`, { method: 'POST', body });
+        // Reload the meal into the form to reflect the changes.
+        const meal = await api(`/api/meals/${mealForm.id.value}`);
+        fillForm(meal);
+        dlg.close();
+        refreshMeals().then(renderMealsList);
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+  });
+  dlg.showModal();
+}
+
+function nutritionRow(label, val, unit = '') {
+  if (val == null) return `<div class="nu"><span class="muted">${label}</span><span>—</span></div>`;
+  return `<div class="nu"><span class="muted">${label}</span><span>${val}${unit ? ' ' + unit : ''}</span></div>`;
+}
+
 function fillForm(meal) {
   mealForm.id.value    = meal?.id || '';
   mealForm.name.value  = meal?.name || '';
   mealForm.notes.value = meal?.notes || '';
   mealForm.tags.value  = (meal?.tags || []).map(t => t.name).join(', ');
   $('#meal-form-title').textContent = meal ? `Edit: ${meal.name}` : 'Add a meal';
+  // Nutrition fields.
+  const n = meal?.nutrition || {};
+  mealForm.n_calories.value = n.calories ?? '';
+  mealForm.n_protein.value  = n.protein_g ?? '';
+  mealForm.n_carbs.value    = n.carbs_g ?? '';
+  mealForm.n_fat.value      = n.fat_g ?? '';
+  mealForm.n_fiber.value    = n.fiber_g ?? '';
+  mealForm.n_sodium.value   = n.sodium_mg ?? '';
+  $('#nutrition-summary').textContent = n.calories != null ? `· ${n.calories} kcal` : '';
   currentPhotos = (meal?.photos || []).slice();
   pendingPhotos = [];
   $('#meal-photo-status').textContent = '';
@@ -553,6 +758,25 @@ function fillForm(meal) {
 
 $('#meal-form-reset').addEventListener('click', () => fillForm(null));
 
+function readNutritionFromForm() {
+  const get = (n) => {
+    const v = mealForm[n].value;
+    if (v === '' || v == null) return null;
+    const num = Number(v);
+    return Number.isFinite(num) ? num : null;
+  };
+  const out = {
+    calories:  get('n_calories'),
+    protein_g: get('n_protein'),
+    carbs_g:   get('n_carbs'),
+    fat_g:     get('n_fat'),
+    fiber_g:   get('n_fiber'),
+    sodium_mg: get('n_sodium'),
+  };
+  // Return null if every field is empty so we don't store noise.
+  return Object.values(out).every(v => v == null) ? null : out;
+}
+
 mealForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const id    = mealForm.id.value;
@@ -560,6 +784,7 @@ mealForm.addEventListener('submit', async (e) => {
     name:  mealForm.name.value.trim(),
     notes: mealForm.notes.value.trim(),
     tags:  mealForm.tags.value.split(',').map(s => s.trim()).filter(Boolean),
+    nutrition: readNutritionFromForm(),
   };
   try {
     let saved;
@@ -619,10 +844,12 @@ function renderMealsList() {
     const cover = (m.photos && m.photos[0]) ? m.photos[0].url : '';
     const tagStr = m.tags.map(t => `<span class="chip">${escapeHtml(t.name)}</span>`).join(' ');
     const count = (m.photos || []).length;
+    const kcal = m.nutrition?.calories;
     tile.innerHTML = `
       <div class="tile-cover" ${cover ? `style="background-image:url('${cover}')"` : ''}>
         ${cover ? '' : '<span class="tile-placeholder">🍽️</span>'}
         ${count > 1 ? `<span class="tile-count">📷 ${count}</span>` : ''}
+        ${kcal != null ? `<span class="tile-kcal">${kcal} kcal</span>` : ''}
         <button class="tile-del danger" title="Delete meal" data-act="del">✕</button>
       </div>
       <div class="tile-body">
@@ -766,5 +993,42 @@ function parseCsvForUpload(text) {
     .filter(r => (r.name || '').trim());
 }
 
+// ============================================================
+//                     AGENT NOTES BANNER
+// ============================================================
+// Notes are pushed by external agents (or by the user) and surface as a
+// dismissable banner across the top of the app.
+
+async function refreshNotesBanner() {
+  try {
+    const notes = await api('/api/v1/agent/notes?dismissed=0');
+    const banner = $('#notes-banner');
+    if (!notes.length) { banner.hidden = true; banner.innerHTML = ''; return; }
+    banner.hidden = false;
+    banner.innerHTML = '';
+    for (const n of notes) {
+      const row = document.createElement('div');
+      row.className = 'note note-' + (n.kind || 'info');
+      const meta = [n.source, n.due_date].filter(Boolean).join(' · ');
+      row.innerHTML = `
+        <span class="note-kind">${escapeHtml(n.kind)}</span>
+        <span class="note-text">${escapeHtml(n.text)}</span>
+        ${meta ? `<span class="note-meta">${escapeHtml(meta)}</span>` : ''}
+        <button class="note-dismiss" title="Dismiss">✕</button>`;
+      row.querySelector('.note-dismiss').addEventListener('click', async () => {
+        await api(`/api/v1/agent/notes/${n.id}`, { method: 'PATCH', body: { dismissed: true } });
+        refreshNotesBanner();
+      });
+      banner.appendChild(row);
+    }
+  } catch { /* offline / unauthenticated */ }
+}
+
 // ----------------------- boot -----------------------
+(async () => {
+  await refreshAiInfo();
+  await refreshNotesBanner();
+  // Poll for new notes every 5 minutes so external agents can push reminders.
+  setInterval(refreshNotesBanner, 5 * 60 * 1000);
+})();
 showTab('pick');

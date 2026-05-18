@@ -8,7 +8,18 @@ const Database = require('better-sqlite3');
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
-const dbPath = path.join(DATA_DIR, 'web-menu.sqlite');
+const dbPath = path.join(DATA_DIR, 'yes-chef.sqlite');
+// One-time migration from the pre-rename filename. Safe to leave in place forever.
+const legacyDbPath = path.join(DATA_DIR, 'web-menu.sqlite');
+if (!fs.existsSync(dbPath) && fs.existsSync(legacyDbPath)) {
+  fs.renameSync(legacyDbPath, dbPath);
+  // Also move the WAL/SHM sidecars if present.
+  for (const ext of ['-wal', '-shm']) {
+    const src = legacyDbPath + ext, dst = dbPath + ext;
+    if (fs.existsSync(src)) fs.renameSync(src, dst);
+  }
+  console.log(`[migrate] renamed ${legacyDbPath} → ${dbPath}`);
+}
 const db = new Database(dbPath);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
@@ -52,14 +63,40 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_entries_status ON entries(status);
 
   CREATE TABLE IF NOT EXISTS meal_photos (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    meal_id     INTEGER NOT NULL REFERENCES meals(id) ON DELETE CASCADE,
-    filename    TEXT    NOT NULL,
-    sort_order  INTEGER NOT NULL DEFAULT 0,
-    created_at  TEXT    DEFAULT (datetime('now'))
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    meal_id       INTEGER NOT NULL REFERENCES meals(id) ON DELETE CASCADE,
+    filename      TEXT    NOT NULL,
+    sort_order    INTEGER NOT NULL DEFAULT 0,
+    analysis_json TEXT,          -- JSON output from the AI vision provider (nullable)
+    analyzed_at   TEXT,          -- timestamp of last analysis
+    created_at    TEXT    DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_meal_photos_meal ON meal_photos(meal_id);
+
+  -- Notes / reminders an external agent can push to the user, or the user can add manually.
+  CREATE TABLE IF NOT EXISTS agent_notes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT    NOT NULL DEFAULT 'info',   -- info | reminder | recommendation | warning
+    text        TEXT    NOT NULL,
+    meta_json   TEXT,                              -- arbitrary structured payload
+    due_date    TEXT,                              -- optional YYYY-MM-DD
+    source      TEXT    DEFAULT 'user',            -- 'agent:<name>' or 'user'
+    read        INTEGER NOT NULL DEFAULT 0,
+    dismissed   INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT    DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_agent_notes_state ON agent_notes(dismissed, read, created_at);
 `);
+
+// One-off migrations for columns added after the original schema. better-sqlite3
+// has no IF NOT EXISTS for ALTER TABLE, so probe with PRAGMA first.
+function addColumnIfMissing(table, column, ddl) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+  if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+}
+addColumnIfMissing('meal_photos', 'analysis_json', 'analysis_json TEXT');
+addColumnIfMissing('meal_photos', 'analyzed_at',   'analyzed_at TEXT');
+addColumnIfMissing('meals',       'nutrition_json','nutrition_json TEXT');
 
 // Seed a few common tags on first run so the UI isn't empty.
 const tagCount = db.prepare('SELECT COUNT(*) AS n FROM tags').get().n;
@@ -114,7 +151,7 @@ function attachPhotosToMeals(meals) {
   const ids = meals.map(m => m.id);
   const placeholders = ids.map(() => '?').join(',');
   const rows = db.prepare(`
-    SELECT id, meal_id, filename, sort_order
+    SELECT id, meal_id, filename, sort_order, analysis_json, analyzed_at
     FROM meal_photos
     WHERE meal_id IN (${placeholders})
     ORDER BY sort_order ASC, id ASC
@@ -122,11 +159,22 @@ function attachPhotosToMeals(meals) {
   const byMeal = new Map();
   for (const r of rows) {
     if (!byMeal.has(r.meal_id)) byMeal.set(r.meal_id, []);
-    byMeal.get(r.meal_id).push({ id: r.id, filename: r.filename, url: `/photos/${r.filename}` });
+    byMeal.get(r.meal_id).push({
+      id: r.id,
+      filename: r.filename,
+      url: `/photos/${r.filename}`,
+      analyzed_at: r.analyzed_at || null,
+      analysis: r.analysis_json ? safeJSON(r.analysis_json) : null,
+    });
   }
-  for (const m of meals) m.photos = byMeal.get(m.id) || [];
+  for (const m of meals) {
+    m.photos = byMeal.get(m.id) || [];
+    m.nutrition = m.nutrition_json ? safeJSON(m.nutrition_json) : null;
+  }
   return meals;
 }
+
+function safeJSON(s) { try { return JSON.parse(s); } catch { return null; } }
 
 function setMealTags(mealId, tagNames) {
   const del = db.prepare('DELETE FROM meal_tags WHERE meal_id = ?');
@@ -204,5 +252,6 @@ module.exports = {
   attachPhotosToMeals,
   bulkImportMeals,
   setMealTags,
+  safeJSON,
   DATA_DIR,
 };
