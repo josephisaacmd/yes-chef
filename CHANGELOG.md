@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.0] — 2026-05-17
+
+### Added — Home page
+
+- New **Home** tab is now the default landing view. Includes:
+  - Time-aware greeting and full date
+  - "Today" card with each slot, eaten state, and an inline 🍽️ mark-eaten button
+  - "Quick actions" card with one-click access to Pick / Auto-fill / Photos / Meals
+  - "This year" mini stats card (eaten / unique / variety / streak)
+  - "Coming up" — the next planned entries across the upcoming week
+  - "Recent photos" strip showing the 8 most recently uploaded photos; click to jump straight into the meal editor
+- Brand header is now a link to Home; URL hash (`#home`, `#photos`, …) is kept in sync so deep links work.
+
+### Added — Photos page
+
+- New **Photos** tab: full-bleed gallery of every meal photo across the library.
+- Filter by meal name; toggle "only AI-analyzed".
+- Analyzed photos get a green border; calorie overlays carry over from the meal record.
+- Clicking a photo jumps to that meal's editor.
+
+### Added — Auto-fill plan (suggest meals)
+
+- New **✨ Auto-fill** button on the Plan view (and on Home).
+- Dialog lets you:
+  - Pick a date range (presets: **Tomorrow**, **Next 5 weekdays**, **Next 7 days**, **Next weekend**, or fully custom from/to)
+  - Choose which slots to fill (breakfast / lunch / dinner)
+  - Tune the same variety slider used by the Pick view
+  - Filter by tags
+  - Skip slots that are already filled (default on)
+- The picker batches the request and returns N distinct meals (no repeats within the batch, and already-planned meals in the window are excluded automatically).
+- Preview screen lets you 🔄 reroll any individual slot or ✕ remove it before committing.
+- "Add all to plan" creates the planned entries in one shot.
+- New endpoint: `POST /api/v1/agent/plan/suggest` (preview-only, does not write).
+- `lib/pick-algorithm.js` now accepts `excludeIds` for chained / rerolled picks.
+
+### Changed
+
+- Tabs are now: **Home · Pick · Plan · History · Photos · Meals**.
+
+---
+
 ## [0.2.0] — 2026-05-17
 
 ### Renamed
@@ -98,5 +139,6 @@ Initial public release of `web-menu`.
 - Shared password auth (bcrypt-hashed at boot) and optional Google OAuth.
 - Docker single-container deployment with `better-sqlite3` and file-store sessions under `DATA_DIR`.
 
+[0.3.0]: https://github.com/josephisaac91/web-menu/releases/tag/v0.3.0
 [0.2.0]: https://github.com/josephisaac91/web-menu/releases/tag/v0.2.0
 [0.1.0]: https://github.com/josephisaac91/web-menu/releases/tag/v0.1.0

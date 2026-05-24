@@ -8,14 +8,16 @@
 </head>
 <body>
   <header class="topbar">
-    <h1 class="brand">
+    <a href="#home" class="brand brand-link" data-tab="home" title="Go to home">
       <span class="brand-name">🍽️ yes-chef</span>
       <span class="brand-tag">Your Smart Menu Planner</span>
-    </h1>
+    </a>
     <nav>
+      <button class="tab" data-tab="home">Home</button>
       <button class="tab" data-tab="pick">Pick</button>
       <button class="tab" data-tab="plan">Plan</button>
       <button class="tab" data-tab="history">History</button>
+      <button class="tab" data-tab="photos">Photos</button>
       <button class="tab" data-tab="meals">Meals</button>
     </nav>
     <form id="logout-form"><button class="link" type="submit">Sign out</button></form>
@@ -25,8 +27,57 @@
   <div id="notes-banner" class="notes-banner" hidden></div>
 
   <main>
+    <!-- ============ HOME ============ -->
+    <section class="view" data-view="home" hidden>
+      <div class="home-hero">
+        <h2 id="home-greeting">Hey there 👋</h2>
+        <p class="muted" id="home-date"></p>
+      </div>
+
+      <div class="home-grid">
+        <div class="card home-card home-today">
+          <div class="home-card-head">
+            <h3>Today</h3>
+            <button class="link-btn" data-tab="plan">Open plan →</button>
+          </div>
+          <div id="home-today-slots"></div>
+        </div>
+
+        <div class="card home-card home-actions">
+          <h3>Quick actions</h3>
+          <div class="quick-actions">
+            <button class="primary" data-tab="pick">🎲 Pick a meal</button>
+            <button id="home-autofill">✨ Auto-fill plan</button>
+            <button data-tab="photos">📷 Browse photos</button>
+            <button data-tab="meals">🍳 Manage meals</button>
+          </div>
+        </div>
+
+        <div class="card home-card home-stats">
+          <div class="home-card-head">
+            <h3>This year</h3>
+            <button class="link-btn" data-tab="history">See details →</button>
+          </div>
+          <div id="home-stats-grid"></div>
+        </div>
+
+        <div class="card home-card home-upcoming">
+          <h3>Coming up</h3>
+          <div id="home-upcoming-list"></div>
+        </div>
+
+        <div class="card home-card home-recent">
+          <div class="home-card-head">
+            <h3>Recent photos</h3>
+            <button class="link-btn" data-tab="photos">See all →</button>
+          </div>
+          <div id="home-recent-photos" class="photo-strip"></div>
+        </div>
+      </div>
+    </section>
+
     <!-- ============ PICK ============ -->
-    <section class="view" data-view="pick">
+    <section class="view" data-view="pick" hidden>
       <h2>What should we eat?</h2>
       <p class="muted">Filter by tag, then roll the dice. Add it to today's plan or log it as eaten.</p>
 
@@ -94,6 +145,7 @@
             <button id="plan-today">Today</button>
             <button id="plan-next" title="Next">›</button>
           </div>
+          <button id="plan-autofill" class="primary">✨ Auto-fill</button>
         </div>
       </div>
       <p class="muted">Click a slot to assign a meal. Mark planned meals as eaten when the day comes.</p>
@@ -123,8 +175,33 @@
     </section>
 
     <!-- ============ MEALS ============ -->
+    <!-- ============ PHOTOS ============ -->
+    <section class="view" data-view="photos" hidden>
+      <div class="view-header">
+        <h2>Photos</h2>
+        <span id="photos-count" class="muted"></span>
+      </div>
+      <div class="filter-row">
+        <input id="photos-search" placeholder="Filter by meal name…" />
+        <label style="display:inline-flex; align-items:center; gap:.35rem; margin:0">
+          <input type="checkbox" id="photos-only-analyzed" style="width:auto" />
+          <span>only AI-analyzed</span>
+        </label>
+      </div>
+      <div id="photos-grid" class="photos-grid"></div>
+    </section>
+
+    <!-- ============ MEALS ============ -->
     <section class="view" data-view="meals" hidden>
       <h2>Meals</h2>
+
+      <details class="card" id="ai-card" hidden>
+        <summary><strong>🤖 AI vision</strong> <span id="ai-summary" class="muted"></span></summary>
+        <div class="row" style="align-items:center">
+          <button type="button" id="ai-test-btn">Test connection</button>
+          <span id="ai-test-result" class="muted" style="flex:1; font-size:.85rem; word-break:break-word"></span>
+        </div>
+      </details>
 
       <details class="card">
         <summary><strong>Manage tags</strong></summary>
@@ -190,6 +267,68 @@
       <div id="meals-list" class="meal-gallery"></div>
     </section>
   </main>
+
+  <!-- ====== Auto-fill (suggest meals) dialog ====== -->
+  <dialog id="suggest-dialog" class="suggest-dialog">
+    <form method="dialog">
+      <h3>✨ Auto-fill plan</h3>
+
+      <div id="suggest-step1">
+        <label>Date range</label>
+        <div class="row preset-row">
+          <button type="button" data-preset="tomorrow">Tomorrow</button>
+          <button type="button" data-preset="weekdays">Next 5 weekdays</button>
+          <button type="button" data-preset="week7">Next 7 days</button>
+          <button type="button" data-preset="weekend">Next weekend</button>
+        </div>
+        <div class="row">
+          <label>From <input type="date" id="suggest-from" /></label>
+          <label>To <input type="date" id="suggest-to" /></label>
+        </div>
+
+        <label>Slots to fill</label>
+        <div class="slot-pickers">
+          <label><input type="checkbox" name="slot" value="breakfast" /> Breakfast</label>
+          <label><input type="checkbox" name="slot" value="lunch" checked /> Lunch</label>
+          <label><input type="checkbox" name="slot" value="dinner" checked /> Dinner</label>
+        </div>
+
+        <label>
+          Variety <span id="suggest-variety-val" class="muted" style="font-weight:600">0.6</span>
+          <input type="range" id="suggest-variety" min="0" max="1" step="0.05" value="0.6" />
+        </label>
+
+        <div class="row">
+          <label style="flex:0 0 auto">Skip last
+            <input type="number" id="suggest-avoid" min="0" max="365" value="14" style="width:5rem" />
+            days
+          </label>
+          <label style="display:inline-flex; align-items:center; gap:.4rem; flex:1">
+            <input type="checkbox" id="suggest-skip-filled" checked style="width:auto" />
+            <span>Skip slots that already have a meal</span>
+          </label>
+        </div>
+
+        <label>Tags <span class="muted" style="font-size:.75rem">(optional)</span></label>
+        <div id="suggest-tags" class="tag-chips"></div>
+
+        <div class="row" style="margin-top:.75rem">
+          <button type="button" id="suggest-generate" class="primary">Generate suggestions</button>
+          <button value="cancel">Cancel</button>
+        </div>
+      </div>
+
+      <div id="suggest-step2" hidden>
+        <p id="suggest-summary" class="muted"></p>
+        <div id="suggest-preview" class="suggest-preview"></div>
+        <div class="row" style="margin-top:.75rem">
+          <button type="button" id="suggest-apply" class="primary">Add all to plan</button>
+          <button type="button" id="suggest-back">← Back</button>
+          <button value="cancel">Cancel</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
 
   <!-- ====== Meal picker dialog used by the Plan grid ====== -->
   <dialog id="meal-picker">

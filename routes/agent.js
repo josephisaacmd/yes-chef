@@ -29,14 +29,31 @@ router.get('/spec', (req, res) => {
       { method: 'GET',  path: '/api/v1/agent/state',           desc: 'Recent + upcoming entries, summary stats' },
       { method: 'GET',  path: '/api/v1/agent/stats',           desc: 'Eating history statistics' },
       { method: 'GET',  path: '/api/v1/agent/recommendations', desc: 'Top-N meal suggestions (variety-tunable)' },
+      { method: 'POST', path: '/api/v1/agent/plan/suggest',     desc: 'Suggest meals to fill date×slot cells (preview, does not write)' },
       { method: 'GET',  path: '/api/v1/agent/notes',           desc: 'List notes/reminders (?unread=1, ?dismissed=0)' },
       { method: 'POST', path: '/api/v1/agent/notes',           desc: 'Push a note/reminder' },
       { method: 'PATCH',path: '/api/v1/agent/notes/:id',       desc: 'Mark note read/dismissed' },
       { method: 'DELETE', path: '/api/v1/agent/notes/:id',     desc: 'Delete a note' },
       { method: 'POST', path: '/api/v1/agent/photos/:photoId/analyze', desc: 'Run AI vision on a meal photo' },
       { method: 'POST', path: '/api/v1/agent/photos/:photoId/apply',   desc: 'Apply analysis output to the meal (tags/nutrition/description)' },
+      { method: 'GET',  path: '/api/v1/agent/ai/test',                 desc: 'Probe the configured AI provider; returns reachable model list when possible' },
     ],
   });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/agent/ai/test
+// Lightweight health check: confirms the AI provider URL + auth are reachable
+// and returns the upstream-visible model list when the provider exposes one.
+// ---------------------------------------------------------------------------
+router.get('/ai/test', async (_req, res) => {
+  if (!ai.isEnabled()) return res.status(503).json({ ok: false, ai: ai.info(), error: 'AI provider not configured' });
+  try {
+    const result = await ai.testConnection();
+    res.json({ ai: ai.info(), ...result });
+  } catch (err) {
+    res.status(502).json({ ok: false, ai: ai.info(), error: err.message });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -176,6 +193,86 @@ router.get('/recommendations', (req, res) => {
     candidates_considered: result.candidates_considered,
     fallback: result.fallback,
     picks: result.picks,
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/agent/plan/suggest
+// Body: {
+//   dates: ["YYYY-MM-DD", ...],            // required
+//   slots: ["breakfast"|"lunch"|"dinner"|"side"|"snack", ...],   // required
+//   tags?: string[],
+//   variety?: 0..1,
+//   avoid_days?: number,
+//   skip_filled?: boolean (default true)   // skip cells that already have entries
+//   exclude_meal_ids?: number[]
+// }
+// Returns: { suggestions: [{on_date, slot, meal}], fills, requested, fallback }
+//
+// Pure preview — does NOT write anything. The client confirms one at a time
+// (or batched) by POSTing each as a regular planned entry.
+// ---------------------------------------------------------------------------
+const VALID_SLOTS = new Set(['breakfast', 'lunch', 'side', 'dinner', 'snack']);
+router.post('/plan/suggest', (req, res) => {
+  const b = req.body || {};
+  const dates = Array.isArray(b.dates) ? b.dates.map(String).filter(s => /^\d{4}-\d{2}-\d{2}$/.test(s)) : [];
+  const slots = Array.isArray(b.slots) ? b.slots.filter(s => VALID_SLOTS.has(s)) : [];
+  if (!dates.length) return res.status(400).json({ error: 'dates[] required (YYYY-MM-DD)' });
+  if (!slots.length) return res.status(400).json({ error: 'slots[] required' });
+
+  const tags        = Array.isArray(b.tags) ? b.tags : [];
+  const variety     = parseFloat(b.variety ?? 0.5);
+  const avoid_days  = parseInt(b.avoid_days ?? 14, 10);
+  const skip_filled = b.skip_filled !== false;
+  const excludeIds  = new Set((Array.isArray(b.exclude_meal_ids) ? b.exclude_meal_ids : []).map(Number).filter(Number.isFinite));
+
+  // Find filled cells + accumulate already-planned meals (so we don't suggest dups).
+  const placeholders = dates.map(() => '?').join(',');
+  const existingRows = db.prepare(
+    `SELECT on_date, slot, meal_id FROM entries WHERE on_date IN (${placeholders})`
+  ).all(...dates);
+  const filledKeys = new Set();
+  for (const r of existingRows) {
+    filledKeys.add(`${r.on_date}|${r.slot}`);
+    excludeIds.add(r.meal_id);
+  }
+
+  // Build the list of empty cells we need to fill.
+  const cells = [];
+  for (const d of dates) for (const s of slots) {
+    const key = `${d}|${s}`;
+    if (!skip_filled || !filledKeys.has(key)) cells.push({ on_date: d, slot: s });
+  }
+  if (!cells.length) {
+    return res.json({ suggestions: [], fills: 0, requested: 0, note: 'all selected cells are already filled' });
+  }
+
+  const result = pickMeals({
+    tags, variety,
+    avoidDays: avoid_days,
+    limit: cells.length,
+    excludeIds: Array.from(excludeIds),
+  });
+  if (!result.picks.length) {
+    return res.status(404).json({ error: 'no meals match the filters (after exclusions)' });
+  }
+
+  attachTagsToMeals(result.picks);
+
+  // Pair meals → cells. If there are fewer meals than cells (small library),
+  // we just fill what we can.
+  const suggestions = cells.slice(0, result.picks.length).map((c, i) => ({
+    on_date: c.on_date,
+    slot:    c.slot,
+    meal:    result.picks[i],
+  }));
+
+  res.json({
+    suggestions,
+    fills:     suggestions.length,
+    requested: cells.length,
+    fallback:  result.fallback,
+    variety, avoid_days, tags,
   });
 });
 

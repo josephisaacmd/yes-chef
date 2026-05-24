@@ -14,7 +14,8 @@ async function api(path, opts = {}) {
   if (res.status === 401) { location.href = '/login'; throw new Error('unauthenticated'); }
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `HTTP ${res.status}`);
+    const parts = [data.error, data.detail].filter(Boolean);
+    throw new Error(parts.join(' — ') || `HTTP ${res.status}`);
   }
   return res.status === 204 ? null : res.json();
 }
@@ -56,10 +57,22 @@ async function refreshMeals() { state.meals = await api('/api/meals'); }
 function showTab(name) {
   $$('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
   $$('.view').forEach(v => v.hidden = v.dataset.view !== name);
-  const renderers = { pick: renderPick, plan: renderPlan, history: renderHistory, meals: renderMeals };
+  const renderers = {
+    home: renderHome, pick: renderPick, plan: renderPlan,
+    history: renderHistory, photos: renderPhotos, meals: renderMeals,
+  };
   renderers[name]?.();
+  // Keep the URL hash in sync for shareable links + browser back/forward.
+  if (location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
 }
 $$('.tab').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
+// Any [data-tab] element outside the nav (brand, link buttons, home cards) also navigates.
+document.addEventListener('click', (ev) => {
+  const el = ev.target.closest('[data-tab]');
+  if (!el || el.classList.contains('tab')) return;
+  ev.preventDefault();
+  showTab(el.dataset.tab);
+});
 
 $('#logout-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -565,7 +578,38 @@ let aiInfo = { enabled: false, provider: 'none' };
 async function refreshAiInfo() {
   try { const s = await api('/api/v1/agent/spec'); aiInfo = s.ai || aiInfo; }
   catch { /* not signed in yet, ignore */ }
+  // Show/hide the AI card on the Meals tab and populate the header.
+  const card = document.getElementById('ai-card');
+  if (card) {
+    card.hidden = aiInfo.provider === 'none';
+    const sum = document.getElementById('ai-summary');
+    if (sum) sum.textContent = aiInfo.enabled
+      ? `· ${aiInfo.provider} · ${aiInfo.model || '(no model)'}`
+      : '· not configured';
+  }
 }
+
+async function runAiTest() {
+  const out = document.getElementById('ai-test-result');
+  const btn = document.getElementById('ai-test-btn');
+  btn.disabled = true;
+  out.textContent = 'Testing…';
+  out.classList.remove('error');
+  try {
+    const r = await api('/api/v1/agent/ai/test');
+    const models = r.models ? `models seen: ${r.models.slice(0,8).join(', ')}${r.models.length > 8 ? ` (+${r.models.length-8} more)` : ''}` : '';
+    const want = r.configured_model || '';
+    const hasModel = !want || (r.models && r.models.some(m => m === want || m.startsWith(want.split(':')[0])));
+    out.textContent = `✓ Connected to ${r.ai.provider} at ${r.base_url || r.ai.base_url}. ${models}` +
+      (want && r.models && !hasModel ? ` ⚠ configured model "${want}" not in this list — check AI_MODEL.` : '');
+  } catch (err) {
+    out.textContent = '✗ ' + err.message;
+    out.classList.add('error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+document.getElementById('ai-test-btn')?.addEventListener('click', runAiTest);
 
 function renderPhotoManager() {
   const wrap = $('#meal-photos');
@@ -994,6 +1038,389 @@ function parseCsvForUpload(text) {
 }
 
 // ============================================================
+//                           HOME
+// ============================================================
+function greeting() {
+  const h = new Date().getHours();
+  if (h < 5)  return 'Up late 🌙';
+  if (h < 12) return 'Good morning ☀️';
+  if (h < 17) return 'Good afternoon 👋';
+  if (h < 22) return 'Good evening 🍷';
+  return 'Up late 🌙';
+}
+
+async function renderHome() {
+  // Greeting + date
+  $('#home-greeting').textContent = greeting();
+  $('#home-date').textContent = new Date().toLocaleDateString(undefined, {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+  });
+
+  // Today + upcoming planned entries
+  const today = todayISO();
+  const forward = isoDateOffset(today, 7);
+  let entries = [];
+  try { entries = await api(`/api/entries?from=${today}&to=${forward}`); } catch { entries = []; }
+  const todayEntries = entries.filter(e => e.on_date === today);
+  const upcoming = entries.filter(e => e.on_date > today).slice(0, 6);
+
+  // ----- Today card -----
+  const todayWrap = $('#home-today-slots');
+  todayWrap.innerHTML = '';
+  if (!todayEntries.length) {
+    todayWrap.innerHTML = `<p class="muted">Nothing planned for today. <a href="#pick" data-tab="pick">Pick something now</a> or <a href="#plan" data-tab="plan">open the plan</a>.</p>`;
+  } else {
+    for (const e of todayEntries) {
+      const row = document.createElement('div');
+      row.className = 'home-slot' + (e.status === 'eaten' ? ' eaten' : '');
+      row.innerHTML = `
+        <span class="home-slot-label">${escapeHtml(e.slot)}</span>
+        <span class="home-slot-name">${escapeHtml(e.meal?.name || '(deleted meal)')}</span>
+        ${e.status === 'eaten' ? '<span class="home-slot-tag">✓ eaten</span>' : '<button class="ctrl home-eat" title="Mark eaten">🍽️</button>'}`;
+      const eatBtn = row.querySelector('.home-eat');
+      if (eatBtn) eatBtn.addEventListener('click', async () => {
+        await api(`/api/entries/${e.id}`, { method: 'PATCH', body: { status: 'eaten' } });
+        renderHome();
+      });
+      todayWrap.appendChild(row);
+    }
+  }
+
+  // ----- Stats card -----
+  try {
+    const s = await api('/api/v1/agent/stats?days=365');
+    $('#home-stats-grid').innerHTML = `
+      <div class="stat-card"><div class="stat-label">Eaten</div><div class="stat-num">${s.total_eaten}</div></div>
+      <div class="stat-card"><div class="stat-label">Unique</div><div class="stat-num">${s.unique_meals}</div></div>
+      <div class="stat-card"><div class="stat-label">Variety</div><div class="stat-num">${s.variety_index.toFixed(2)}</div></div>
+      <div class="stat-card"><div class="stat-label">Streak</div><div class="stat-num">${s.streak_days}d</div></div>`;
+  } catch {
+    $('#home-stats-grid').innerHTML = '<p class="muted">Stats unavailable.</p>';
+  }
+
+  // ----- Upcoming card -----
+  const upWrap = $('#home-upcoming-list');
+  upWrap.innerHTML = '';
+  if (!upcoming.length) {
+    upWrap.innerHTML = '<p class="muted">No meals planned for the next 7 days. <button class="link-btn" id="home-upcoming-fill">Auto-fill the week →</button></p>';
+    $('#home-upcoming-fill')?.addEventListener('click', () => openSuggestDialog());
+  } else {
+    for (const e of upcoming) {
+      const row = document.createElement('div');
+      row.className = 'home-upcoming-row';
+      const d = new Date(e.on_date + 'T00:00');
+      row.innerHTML = `
+        <span class="home-upcoming-date">${d.toLocaleDateString(undefined, { weekday:'short', month:'short', day:'numeric' })}</span>
+        <span class="home-upcoming-slot">${escapeHtml(e.slot)}</span>
+        <span class="home-upcoming-name">${escapeHtml(e.meal?.name || '(deleted)')}</span>`;
+      upWrap.appendChild(row);
+    }
+  }
+
+  // ----- Recent photos card -----
+  await refreshMeals();
+  const all = state.meals.flatMap(m => (m.photos || []).map(p => ({ ...p, meal: m })));
+  all.sort((a, b) => b.id - a.id);
+  const recent = all.slice(0, 8);
+  const stripWrap = $('#home-recent-photos');
+  stripWrap.innerHTML = '';
+  if (!recent.length) {
+    stripWrap.innerHTML = '<p class="muted">No photos yet. Add some on the Meals tab.</p>';
+  } else {
+    for (const p of recent) {
+      const tile = document.createElement('div');
+      tile.className = 'photo-strip-tile';
+      tile.style.backgroundImage = `url('${p.url}')`;
+      tile.title = p.meal.name;
+      tile.innerHTML = `<span class="photo-strip-name">${escapeHtml(p.meal.name)}</span>`;
+      tile.addEventListener('click', () => {
+        fillForm(p.meal);
+        showTab('meals');
+      });
+      stripWrap.appendChild(tile);
+    }
+  }
+}
+
+function isoDateOffset(iso, days) {
+  const d = new Date(iso + 'T00:00');
+  d.setDate(d.getDate() + days);
+  return toISO(d);
+}
+
+// ============================================================
+//                          PHOTOS
+// ============================================================
+async function renderPhotos() {
+  await refreshMeals();
+  paintPhotosGrid();
+}
+function paintPhotosGrid() {
+  const q = ($('#photos-search').value || '').toLowerCase();
+  const onlyAnalyzed = $('#photos-only-analyzed').checked;
+  const all = state.meals.flatMap(m => (m.photos || []).map(p => ({ ...p, meal: m })));
+  const filtered = all.filter(p => {
+    if (q && !p.meal.name.toLowerCase().includes(q)) return false;
+    if (onlyAnalyzed && !p.analysis) return false;
+    return true;
+  });
+  filtered.sort((a, b) => b.id - a.id);
+  $('#photos-count').textContent = `${filtered.length} of ${all.length} photos`;
+  const grid = $('#photos-grid');
+  grid.innerHTML = '';
+  if (!filtered.length) {
+    grid.innerHTML = '<p class="muted">No photos match.</p>';
+    return;
+  }
+  for (const p of filtered) {
+    const tile = document.createElement('div');
+    tile.className = 'photos-tile' + (p.analysis ? ' analyzed' : '');
+    const kcal = p.meal.nutrition?.calories;
+    tile.innerHTML = `
+      <div class="photos-cover" style="background-image:url('${p.url}')">
+        ${p.analysis ? '<span class="photo-analyzed">AI</span>' : ''}
+        ${kcal != null ? `<span class="tile-kcal">${kcal} kcal</span>` : ''}
+      </div>
+      <div class="photos-caption">
+        <div class="photos-name">${escapeHtml(p.meal.name)}</div>
+        ${p.meal.tags?.length ? `<div class="muted" style="font-size:.75rem">${escapeHtml(p.meal.tags.map(t => t.name).join(' · '))}</div>` : ''}
+      </div>`;
+    tile.addEventListener('click', () => {
+      fillForm(p.meal);
+      showTab('meals');
+    });
+    grid.appendChild(tile);
+  }
+}
+$('#photos-search').addEventListener('input', paintPhotosGrid);
+$('#photos-only-analyzed').addEventListener('change', paintPhotosGrid);
+
+// ============================================================
+//                     SUGGEST (auto-fill) DIALOG
+// ============================================================
+let suggestedSlots = [];     // current preview, mutable for rerolls
+let suggestedExcludeIds = new Set();
+
+async function openSuggestDialog() {
+  // Make sure tags are loaded so the chip selector is populated.
+  if (!state.tags.length) { try { await refreshTags(); } catch {} }
+  const dlg = $('#suggest-dialog');
+  $('#suggest-step1').hidden = false;
+  $('#suggest-step2').hidden = true;
+  applyDatePreset('weekdays');
+  $('#suggest-variety').value = '0.6';
+  $('#suggest-variety-val').textContent = '0.6';
+  renderSuggestTags();
+  suggestedSlots = [];
+  suggestedExcludeIds = new Set();
+  dlg.showModal();
+}
+
+function applyDatePreset(preset) {
+  const today = new Date(); today.setHours(0,0,0,0);
+  let from, to;
+  if (preset === 'tomorrow') {
+    from = isoOffsetDate(today, 1);
+    to   = from;
+  } else if (preset === 'weekdays') {
+    // Next 5 weekdays starting tomorrow (skip Sat/Sun).
+    const days = [];
+    const cursor = new Date(today);
+    while (days.length < 5) {
+      cursor.setDate(cursor.getDate() + 1);
+      if (cursor.getDay() !== 0 && cursor.getDay() !== 6) days.push(toISO(cursor));
+    }
+    from = days[0]; to = days[days.length - 1];
+  } else if (preset === 'week7') {
+    from = isoOffsetDate(today, 1);
+    to   = isoOffsetDate(today, 7);
+  } else if (preset === 'weekend') {
+    // Next Sat + Sun
+    const cursor = new Date(today);
+    while (cursor.getDay() !== 6) cursor.setDate(cursor.getDate() + 1);
+    from = toISO(cursor);
+    cursor.setDate(cursor.getDate() + 1);
+    to = toISO(cursor);
+  }
+  $('#suggest-from').value = from;
+  $('#suggest-to').value = to;
+}
+function isoOffsetDate(date, days) {
+  const d = new Date(date); d.setDate(d.getDate() + days);
+  return toISO(d);
+}
+
+function renderSuggestTags() {
+  const wrap = $('#suggest-tags');
+  wrap.innerHTML = '';
+  const selected = new Set();
+  for (const t of state.tags) {
+    wrap.appendChild(chip(t.name, {
+      on: false,
+      onClick: (el) => {
+        if (selected.has(t.name)) selected.delete(t.name);
+        else selected.add(t.name);
+        el.classList.toggle('on');
+      },
+    }));
+  }
+  wrap.dataset.selected = '';  // placeholder; we'll read via .chip.on
+}
+
+function readSelectedSuggestTags() {
+  return $$('#suggest-tags .chip.on').map(el => el.textContent);
+}
+
+function datesBetween(fromISO, toISOStr) {
+  const out = [];
+  if (!fromISO || !toISOStr) return out;
+  const a = new Date(fromISO + 'T00:00');
+  const b = new Date(toISOStr + 'T00:00');
+  if (b < a) return out;
+  for (const d = new Date(a); d <= b; d.setDate(d.getDate() + 1)) out.push(toISO(d));
+  return out;
+}
+
+async function generateSuggestions() {
+  const from = $('#suggest-from').value;
+  const to   = $('#suggest-to').value;
+  const dates = datesBetween(from, to);
+  if (!dates.length) { alert('Pick a valid date range.'); return; }
+  const slots = $$('#suggest-step1 input[name="slot"]:checked').map(c => c.value);
+  if (!slots.length) { alert('Pick at least one slot.'); return; }
+
+  const body = {
+    dates, slots,
+    tags: readSelectedSuggestTags(),
+    variety: parseFloat($('#suggest-variety').value),
+    avoid_days: parseInt($('#suggest-avoid').value, 10),
+    skip_filled: $('#suggest-skip-filled').checked,
+  };
+  const genBtn = $('#suggest-generate');
+  genBtn.disabled = true;
+  genBtn.textContent = 'Thinking…';
+  try {
+    const data = await api('/api/v1/agent/plan/suggest', { method: 'POST', body });
+    suggestedSlots = data.suggestions || [];
+    suggestedExcludeIds = new Set(suggestedSlots.map(s => s.meal.id));
+    $('#suggest-summary').textContent = `${data.fills} of ${data.requested} slots filled${data.fallback ? ' · ' + data.fallback : ''}`;
+    renderSuggestPreview();
+    $('#suggest-step1').hidden = true;
+    $('#suggest-step2').hidden = false;
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    genBtn.disabled = false;
+    genBtn.textContent = 'Generate suggestions';
+  }
+}
+
+function renderSuggestPreview() {
+  const wrap = $('#suggest-preview');
+  wrap.innerHTML = '';
+  if (!suggestedSlots.length) {
+    wrap.innerHTML = '<p class="muted">No suggestions to show.</p>';
+    return;
+  }
+  // Group by date for readability.
+  const byDate = new Map();
+  for (const s of suggestedSlots) {
+    if (!byDate.has(s.on_date)) byDate.set(s.on_date, []);
+    byDate.get(s.on_date).push(s);
+  }
+  for (const [date, items] of byDate) {
+    const day = document.createElement('div');
+    day.className = 'sg-day';
+    const d = new Date(date + 'T00:00');
+    day.innerHTML = `<div class="sg-day-head">${d.toLocaleDateString(undefined, { weekday:'short', month:'short', day:'numeric' })}</div>`;
+    for (const s of items) {
+      const row = document.createElement('div');
+      row.className = 'sg-row';
+      row.innerHTML = `
+        <span class="sg-slot">${escapeHtml(s.slot)}</span>
+        <span class="sg-name">${escapeHtml(s.meal.name)}</span>
+        <button type="button" class="sg-reroll" title="Different suggestion">🔄</button>
+        <button type="button" class="sg-remove danger" title="Skip this slot">✕</button>`;
+      row.querySelector('.sg-reroll').addEventListener('click', () => rerollSuggestion(s));
+      row.querySelector('.sg-remove').addEventListener('click', () => removeSuggestion(s));
+      day.appendChild(row);
+    }
+    wrap.appendChild(day);
+  }
+}
+
+async function rerollSuggestion(s) {
+  try {
+    const data = await api('/api/v1/agent/plan/suggest', {
+      method: 'POST',
+      body: {
+        dates: [s.on_date],
+        slots: [s.slot],
+        tags: readSelectedSuggestTags(),
+        variety: parseFloat($('#suggest-variety').value),
+        avoid_days: parseInt($('#suggest-avoid').value, 10),
+        skip_filled: false,
+        exclude_meal_ids: Array.from(suggestedExcludeIds),
+      },
+    });
+    const fresh = data.suggestions?.[0];
+    if (!fresh) { alert('No other meals match those filters.'); return; }
+    // Replace the entry in-place; rotate the exclusion set.
+    suggestedExcludeIds.delete(s.meal.id);
+    suggestedExcludeIds.add(fresh.meal.id);
+    const idx = suggestedSlots.findIndex(x => x.on_date === s.on_date && x.slot === s.slot);
+    if (idx >= 0) suggestedSlots[idx] = fresh;
+    renderSuggestPreview();
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+function removeSuggestion(s) {
+  suggestedSlots = suggestedSlots.filter(x => !(x.on_date === s.on_date && x.slot === s.slot));
+  suggestedExcludeIds.delete(s.meal.id);
+  renderSuggestPreview();
+}
+
+async function applySuggestions() {
+  if (!suggestedSlots.length) { $('#suggest-dialog').close(); return; }
+  const btn = $('#suggest-apply');
+  btn.disabled = true;
+  btn.textContent = 'Adding…';
+  try {
+    for (const s of suggestedSlots) {
+      await api('/api/entries', {
+        method: 'POST',
+        body: { meal_id: s.meal.id, on_date: s.on_date, slot: s.slot, status: 'planned' },
+      });
+    }
+    $('#suggest-dialog').close();
+    // If we're on the plan view, refresh it.
+    if (!$('section[data-view="plan"]').hidden) renderPlan();
+    if (!$('section[data-view="home"]').hidden) renderHome();
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Add all to plan';
+  }
+}
+
+// Wire up controls
+$$('#suggest-step1 [data-preset]').forEach(b => b.addEventListener('click', () => applyDatePreset(b.dataset.preset)));
+$('#suggest-variety').addEventListener('input', (e) => {
+  $('#suggest-variety-val').textContent = parseFloat(e.target.value).toFixed(2);
+});
+$('#suggest-generate').addEventListener('click', generateSuggestions);
+$('#suggest-back').addEventListener('click', () => {
+  $('#suggest-step1').hidden = false;
+  $('#suggest-step2').hidden = true;
+});
+$('#suggest-apply').addEventListener('click', applySuggestions);
+$('#plan-autofill').addEventListener('click', openSuggestDialog);
+$('#home-autofill').addEventListener('click', openSuggestDialog);
+
+// ============================================================
 //                     AGENT NOTES BANNER
 // ============================================================
 // Notes are pushed by external agents (or by the user) and surface as a
@@ -1031,4 +1458,6 @@ async function refreshNotesBanner() {
   // Poll for new notes every 5 minutes so external agents can push reminders.
   setInterval(refreshNotesBanner, 5 * 60 * 1000);
 })();
-showTab('pick');
+// Honour an existing hash (e.g. landed via /#photos), otherwise default to home.
+const initialTab = (location.hash || '#home').slice(1);
+showTab(['home','pick','plan','history','photos','meals'].includes(initialTab) ? initialTab : 'home');
