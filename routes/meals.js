@@ -194,7 +194,21 @@ router.post('/:id/photos', (req, res) => {
   if (buf.length > MAX_PHOTO_BYTES) return res.status(413).json({ error: 'image too large' });
 
   const filename = `${crypto.randomUUID()}.${ext}`;
-  fs.writeFileSync(path.join(PHOTO_DIR, filename), buf);
+  const filePath = path.join(PHOTO_DIR, filename);
+  try {
+    fs.writeFileSync(filePath, buf);
+    // Confirm the file actually landed and has the right size — catches
+    // permission, full-disk, or read-only mount issues immediately.
+    const stat = fs.statSync(filePath);
+    if (stat.size !== buf.length) throw new Error(`size mismatch: wrote ${buf.length}, on-disk ${stat.size}`);
+  } catch (err) {
+    console.error('[photos] write failed for meal', meal.id, 'at', filePath, '—', err.message);
+    return res.status(500).json({
+      error: 'failed to save photo file',
+      detail: `${err.code || ''} ${err.message}`.trim(),
+      path: filePath,
+    });
+  }
 
   const maxRow = db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM meal_photos WHERE meal_id = ?').get(meal.id);
   const sort_order = (maxRow?.m ?? -1) + 1;

@@ -79,9 +79,11 @@ app.use('/api/tags',    tagsRouter);
 app.use('/api/entries', entriesRouter);
 
 // Authenticated static serving of meal photos. Filenames are random UUIDs we
-// generated server-side, but still validate to block any path traversal.
+// generated server-side. fallthrough:false is critical — otherwise a missing
+// file would fall through to the SPA wildcard and return index.html as a
+// 200, which then renders as an invisible/broken image in the browser.
 app.use('/photos', express.static(path.join(DATA_DIR, 'photos'), {
-  fallthrough: true,
+  fallthrough: false,
   index: false,
   maxAge: '7d',
 }));

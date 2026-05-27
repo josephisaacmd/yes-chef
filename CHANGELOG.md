@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.0] — 2026-05-23
+
+### Added — Settings tab + multi-provider AI
+
+- New **Settings** tab with full CRUD for AI provider configurations:
+  - Add multiple named configs (Anthropic, OpenAI, OpenRouter, Ollama, OpenAI-compatible)
+  - Each row shows provider / model / base URL / masked key
+  - **Activate**, **Test**, **Edit**, **Delete** buttons per config
+  - Active config gets a green pill and border highlight
+- New "Active model" dropdown on the Meals tab's 🤖 AI vision card — switch the active AI on the fly with no restart.
+- Edit dialog has provider-specific placeholder hints (e.g. "MUST include vendor/ prefix" for OpenRouter, "vision-capable models only" for Ollama) and a one-click **Test now** button that probes the connection before saving.
+- API keys are stored in the DB (single-tenant, self-hosted), never returned over the wire — only a masked preview (`sk-a…seed`).
+- Backward compatible: on first boot, if `AI_PROVIDER` / `AI_API_KEY` / `AI_MODEL` / `AI_BASE_URL` are set in env, a config is seeded automatically. After that, env vars are ignored.
+
+### Added — Endpoints
+
+- `GET    /api/v1/agent/ai/configs`
+- `POST   /api/v1/agent/ai/configs`
+- `PATCH  /api/v1/agent/ai/configs/:id`
+- `DELETE /api/v1/agent/ai/configs/:id`
+- `POST   /api/v1/agent/ai/configs/:id/activate`
+- `POST   /api/v1/agent/ai/configs/:id/test`
+- `GET    /api/v1/agent/ai/providers` (lists supported names)
+
+### Fixed — Photos disappearing
+
+- The `/photos/*` static route now uses `fallthrough: false`. Previously, a missing file fell through to the SPA wildcard and returned `index.html` with a 200 status; browsers tried to render the HTML as an image and produced an invisible "broken" tile with no error icon.
+- The auth middleware now returns a real `401 Unauthorized` for `/photos/*` requests instead of redirecting to `/login` (a redirect also produced HTML masquerading as an image).
+- Image tags in the photo manager now have an `onerror` handler that swaps in a visible ⚠ "Image failed to load" placeholder so problems surface immediately.
+- Photo upload now verifies the file actually landed on disk with the correct size and returns a 500 with the `errno` + path on failure — catches permissions / volume issues that previously failed silently.
+
+### Changed — Photo deletion safety
+
+- The ✕ delete button on a photo tile now uses a **two-step arm/confirm** pattern: first click marks the tile with a red border and changes the button to "✓ Confirm" with a 4-second timer. Click again to delete; click anywhere else (or wait 4s) to cancel. No more accidental deletions.
+- Clicking an un-analysed photo now opens a fullscreen **lightbox** (click outside or press Escape to close).
+
+### Changed — Misc
+
+- Tabs are now: **Home · Pick · Plan · History · Photos · Meals · Settings**.
+- Removed the "Diagnostics" button from the Meals tab — it lives in Settings now (still reachable via the same dialog).
+
+### Migration
+
+- New table `ai_configs` is created automatically on first boot. Existing data is untouched.
+- After upgrading: open **Settings** → review the seeded config(s). If you have leftover `AI_*` env vars from before, you can delete them — they're only read when the table is empty.
+
+---
+
 ## [0.3.0] — 2026-05-17
 
 ### Added — Home page
@@ -139,6 +187,7 @@ Initial public release of `web-menu`.
 - Shared password auth (bcrypt-hashed at boot) and optional Google OAuth.
 - Docker single-container deployment with `better-sqlite3` and file-store sessions under `DATA_DIR`.
 
+[0.4.0]: https://github.com/josephisaac91/web-menu/releases/tag/v0.4.0
 [0.3.0]: https://github.com/josephisaac91/web-menu/releases/tag/v0.3.0
 [0.2.0]: https://github.com/josephisaac91/web-menu/releases/tag/v0.2.0
 [0.1.0]: https://github.com/josephisaac91/web-menu/releases/tag/v0.1.0

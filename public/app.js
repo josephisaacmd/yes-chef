@@ -60,6 +60,7 @@ function showTab(name) {
   const renderers = {
     home: renderHome, pick: renderPick, plan: renderPlan,
     history: renderHistory, photos: renderPhotos, meals: renderMeals,
+    settings: renderSettings,
   };
   renderers[name]?.();
   // Keep the URL hash in sync for shareable links + browser back/forward.
@@ -574,22 +575,92 @@ let pendingPhotos = [];
 // Currently-edited meal's photos (server-side ones).
 let currentPhotos = [];
 
-let aiInfo = { enabled: false, provider: 'none' };
+// ============================================================
+//                      AI CONFIG MANAGEMENT
+// ============================================================
+let aiInfo    = { enabled: false, provider: 'none', id: null };
+let aiConfigs = [];                                    // last loaded list
+
 async function refreshAiInfo() {
-  try { const s = await api('/api/v1/agent/spec'); aiInfo = s.ai || aiInfo; }
-  catch { /* not signed in yet, ignore */ }
-  // Show/hide the AI card on the Meals tab and populate the header.
+  try {
+    const data = await api('/api/v1/agent/ai/configs');
+    aiConfigs = data.configs || [];
+    aiInfo    = data.active  || aiInfo;
+  } catch {
+    aiConfigs = []; aiInfo = { enabled: false, provider: 'none', id: null };
+  }
+  paintAiCard();
+}
+
+function paintAiCard() {
   const card = document.getElementById('ai-card');
-  if (card) {
-    card.hidden = aiInfo.provider === 'none';
-    const sum = document.getElementById('ai-summary');
-    if (sum) sum.textContent = aiInfo.enabled
-      ? `· ${aiInfo.provider} · ${aiInfo.model || '(no model)'}`
-      : '· not configured';
+  if (!card) return;
+  const sum = document.getElementById('ai-summary');
+  if (sum) {
+    if (!aiConfigs.length)        sum.textContent = '· no configurations · open Settings →';
+    else if (!aiInfo.enabled)     sum.textContent = `· ${aiInfo.label || aiInfo.provider} (disabled — missing key)`;
+    else                          sum.textContent = `· ${aiInfo.label || aiInfo.provider} · ${aiInfo.model || '(no model)'}`;
+  }
+
+  // Quick-switch dropdown
+  const sel = document.getElementById('ai-quick-switch');
+  if (sel) {
+    sel.innerHTML = '';
+    if (!aiConfigs.length) {
+      const opt = document.createElement('option');
+      opt.textContent = '(none — add one in Settings)';
+      opt.disabled = true;
+      sel.appendChild(opt);
+      sel.disabled = true;
+    } else {
+      sel.disabled = false;
+      for (const c of aiConfigs) {
+        const opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = `${c.label} — ${c.provider}${c.model ? ' / ' + c.model : ''}` + (c.has_api_key || c.provider === 'ollama' || c.provider === 'openai-compatible' ? '' : ' ⚠ no key');
+        if (c.is_active) opt.selected = true;
+        sel.appendChild(opt);
+      }
+    }
+  }
+
+  // Warnings from diagnostics (best-effort)
+  const warn = document.getElementById('ai-warnings');
+  if (warn) {
+    warn.innerHTML = '';
+    api('/api/v1/agent/diagnostics').then(d => {
+      const ws = d?.ai?.warnings || [];
+      if (!ws.length) return;
+      const head = document.createElement('div');
+      head.className = 'ai-warn-head';
+      head.textContent = '⚠ Possible misconfiguration on active config';
+      warn.appendChild(head);
+      for (const w of ws) {
+        const li = document.createElement('div');
+        li.className = 'ai-warn-row';
+        li.textContent = w;
+        warn.appendChild(li);
+      }
+    }).catch(() => {});
   }
 }
 
-async function runAiTest() {
+// Quick-switch handler (Meals tab)
+document.getElementById('ai-quick-switch')?.addEventListener('change', async (ev) => {
+  const id = parseInt(ev.target.value, 10);
+  if (!Number.isFinite(id)) return;
+  try {
+    await api(`/api/v1/agent/ai/configs/${id}/activate`, { method: 'POST' });
+    await refreshAiInfo();
+    const out = document.getElementById('ai-test-result');
+    if (out) { out.textContent = '✓ Switched active model.'; out.classList.remove('error'); }
+  } catch (err) {
+    alert('Switch failed: ' + err.message);
+  }
+});
+
+// Test the currently-active config (Meals tab button)
+document.getElementById('ai-test-btn')?.addEventListener('click', async () => {
   const out = document.getElementById('ai-test-result');
   const btn = document.getElementById('ai-test-btn');
   btn.disabled = true;
@@ -597,19 +668,249 @@ async function runAiTest() {
   out.classList.remove('error');
   try {
     const r = await api('/api/v1/agent/ai/test');
-    const models = r.models ? `models seen: ${r.models.slice(0,8).join(', ')}${r.models.length > 8 ? ` (+${r.models.length-8} more)` : ''}` : '';
-    const want = r.configured_model || '';
-    const hasModel = !want || (r.models && r.models.some(m => m === want || m.startsWith(want.split(':')[0])));
-    out.textContent = `✓ Connected to ${r.ai.provider} at ${r.base_url || r.ai.base_url}. ${models}` +
-      (want && r.models && !hasModel ? ` ⚠ configured model "${want}" not in this list — check AI_MODEL.` : '');
+    out.textContent = formatTestResult(r);
   } catch (err) {
     out.textContent = '✗ ' + err.message;
     out.classList.add('error');
   } finally {
     btn.disabled = false;
   }
+});
+
+function formatTestResult(r) {
+  const models = r.models ? `models: ${r.models.slice(0,6).join(', ')}${r.models.length > 6 ? ` (+${r.models.length-6})` : ''}.` : '';
+  const want = r.configured_model || '';
+  const missing = want && r.models && !r.models.some(m => m === want || m.startsWith(want.split(':')[0]));
+  return `✓ ${r.label || r.provider} at ${r.base_url}. ${models}` +
+    (missing ? ` ⚠ model "${want}" not in this list.` : '');
 }
-document.getElementById('ai-test-btn')?.addEventListener('click', runAiTest);
+
+// -------- Diagnostics dialog --------
+function showDiagnostics() {
+  const dlg = document.getElementById('diagnostics-dialog');
+  const out = document.getElementById('diagnostics-output');
+  out.textContent = 'Loading…';
+  dlg.showModal();
+  refreshDiagnostics();
+}
+async function refreshDiagnostics() {
+  const out = document.getElementById('diagnostics-output');
+  try {
+    const data = await api('/api/v1/agent/diagnostics');
+    out.textContent = JSON.stringify(data, null, 2);
+  } catch (err) {
+    out.textContent = 'Error: ' + err.message;
+  }
+}
+document.getElementById('diagnostics-btn')?.addEventListener('click', showDiagnostics);
+document.getElementById('diagnostics-refresh')?.addEventListener('click', refreshDiagnostics);
+
+// -------- Settings tab renderer --------
+async function renderSettings() {
+  await refreshAiInfo();
+  paintAiConfigsList();
+}
+
+function paintAiConfigsList() {
+  const wrap = document.getElementById('ai-configs-list');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  if (!aiConfigs.length) {
+    wrap.innerHTML = '<p class="muted">No configurations yet. Click <strong>+ Add configuration</strong> above to set up Anthropic, OpenAI, Ollama, or OpenRouter.</p>';
+    return;
+  }
+  for (const c of aiConfigs) {
+    const row = document.createElement('div');
+    row.className = 'ai-config-row' + (c.is_active ? ' active' : '');
+    row.innerHTML = `
+      <div class="ai-config-info">
+        <div class="ai-config-label-row">
+          <strong>${escapeHtml(c.label)}</strong>
+          ${c.is_active ? '<span class="ai-active-pill">active</span>' : ''}
+        </div>
+        <div class="ai-config-meta">
+          <span><b>Provider:</b> ${escapeHtml(c.provider)}</span>
+          <span><b>Model:</b> ${escapeHtml(c.model || '(default)')}</span>
+          <span><b>Base URL:</b> ${escapeHtml(c.base_url || '(default)')}</span>
+          <span><b>Key:</b> ${c.has_api_key ? escapeHtml(c.api_key) : '<em class="muted">none</em>'}</span>
+        </div>
+        <div class="ai-config-test-out muted" data-test-out></div>
+      </div>
+      <div class="ai-config-actions">
+        ${c.is_active ? '' : '<button type="button" data-act="activate">Activate</button>'}
+        <button type="button" data-act="test">Test</button>
+        <button type="button" data-act="edit">Edit</button>
+        <button type="button" class="danger" data-act="delete">Delete</button>
+      </div>`;
+    row.querySelector('[data-act="test"]').addEventListener('click', () => testConfigInline(c, row));
+    row.querySelector('[data-act="edit"]').addEventListener('click', () => openAiEditDialog(c));
+    row.querySelector('[data-act="delete"]').addEventListener('click', () => deleteAiConfig(c, row));
+    const actBtn = row.querySelector('[data-act="activate"]');
+    if (actBtn) actBtn.addEventListener('click', async () => {
+      try { await api(`/api/v1/agent/ai/configs/${c.id}/activate`, { method: 'POST' }); await refreshAiInfo(); paintAiConfigsList(); }
+      catch (err) { alert(err.message); }
+    });
+    wrap.appendChild(row);
+  }
+}
+
+async function testConfigInline(c, row) {
+  const out = row.querySelector('[data-test-out]');
+  out.textContent = 'Testing…';
+  out.classList.remove('error');
+  try {
+    const r = await api(`/api/v1/agent/ai/configs/${c.id}/test`, { method: 'POST' });
+    out.textContent = formatTestResult(r);
+  } catch (err) {
+    out.textContent = '✗ ' + err.message;
+    out.classList.add('error');
+  }
+}
+
+async function deleteAiConfig(c, row) {
+  if (!confirm(`Delete "${c.label}"? This only removes the configuration; nothing else is affected.`)) return;
+  try {
+    await api(`/api/v1/agent/ai/configs/${c.id}`, { method: 'DELETE' });
+    await refreshAiInfo();
+    paintAiConfigsList();
+  } catch (err) { alert(err.message); }
+}
+
+// -------- Add/edit dialog --------
+let editingConfigId = null;
+function openAiEditDialog(c) {
+  editingConfigId = c?.id || null;
+  document.getElementById('ai-edit-title').textContent = c ? `Edit "${c.label}"` : 'Add AI configuration';
+  document.getElementById('ai-edit-label').value    = c?.label    || '';
+  document.getElementById('ai-edit-provider').value = c?.provider || 'anthropic';
+  document.getElementById('ai-edit-model').value    = c?.model    || '';
+  document.getElementById('ai-edit-apikey').value   = '';
+  document.getElementById('ai-edit-baseurl').value  = c?.base_url || '';
+  document.getElementById('ai-edit-activate').checked = !!c?.is_active;
+  document.getElementById('ai-edit-status').textContent = '';
+  document.getElementById('ai-edit-status').classList.remove('error');
+  updateAiEditHint();
+  document.getElementById('ai-edit-dialog').showModal();
+}
+document.getElementById('ai-add-btn')?.addEventListener('click', () => openAiEditDialog(null));
+
+const PROVIDER_HINTS = {
+  anthropic:           { model: 'e.g. claude-3-5-sonnet-latest, claude-3-haiku-20240307',          base: 'leave blank (defaults to api.anthropic.com)' },
+  openai:              { model: 'e.g. gpt-4o-mini, gpt-4o',                                       base: 'leave blank (defaults to api.openai.com)' },
+  openrouter:          { model: 'e.g. anthropic/claude-3.5-sonnet, openai/gpt-4o-mini — MUST include vendor/ prefix', base: 'leave blank (defaults to openrouter.ai/api/v1)' },
+  ollama:              { model: 'e.g. llava, bakllava, llama3.2-vision (vision-capable models only)', base: 'e.g. http://localhost:11434 or http://your-server:11434' },
+  'openai-compatible': { model: 'whatever your server exposes (LM Studio shows it in the UI)',    base: 'required — e.g. http://localhost:1234/v1' },
+};
+function updateAiEditHint() {
+  const p = document.getElementById('ai-edit-provider').value;
+  const h = PROVIDER_HINTS[p] || {};
+  document.getElementById('ai-edit-hint').textContent = h.model || '';
+  document.getElementById('ai-edit-model').placeholder    = h.model || '';
+  document.getElementById('ai-edit-baseurl').placeholder = h.base  || '';
+}
+document.getElementById('ai-edit-provider')?.addEventListener('change', updateAiEditHint);
+
+function collectEditPayload() {
+  const apiKeyRaw = document.getElementById('ai-edit-apikey').value;
+  const body = {
+    label:    document.getElementById('ai-edit-label').value.trim(),
+    provider: document.getElementById('ai-edit-provider').value,
+    model:    document.getElementById('ai-edit-model').value.trim(),
+    base_url: document.getElementById('ai-edit-baseurl').value.trim(),
+  };
+  // Only send api_key if user actually typed something (empty = keep existing on edit)
+  if (apiKeyRaw) body.api_key = apiKeyRaw;
+  else if (!editingConfigId) body.api_key = '';
+  return body;
+}
+
+document.getElementById('ai-edit-save')?.addEventListener('click', async () => {
+  const status = document.getElementById('ai-edit-status');
+  const body = collectEditPayload();
+  if (!body.label) { status.textContent = 'Label is required.'; status.classList.add('error'); return; }
+  body.activate = document.getElementById('ai-edit-activate').checked;
+  status.textContent = 'Saving…'; status.classList.remove('error');
+  try {
+    if (editingConfigId) {
+      await api(`/api/v1/agent/ai/configs/${editingConfigId}`, { method: 'PATCH', body });
+      if (body.activate) await api(`/api/v1/agent/ai/configs/${editingConfigId}/activate`, { method: 'POST' });
+    } else {
+      await api('/api/v1/agent/ai/configs', { method: 'POST', body });
+    }
+    document.getElementById('ai-edit-dialog').close();
+    await refreshAiInfo();
+    paintAiConfigsList();
+  } catch (err) {
+    status.textContent = '✗ ' + err.message;
+    status.classList.add('error');
+  }
+});
+
+document.getElementById('ai-edit-test')?.addEventListener('click', async () => {
+  const status = document.getElementById('ai-edit-status');
+  status.textContent = 'Testing (will save first if new)…';
+  status.classList.remove('error');
+  try {
+    const body = collectEditPayload();
+    if (!body.label) { status.textContent = 'Label is required.'; status.classList.add('error'); return; }
+    // For testing without persisting changes: save (or update) then test that id.
+    let id = editingConfigId;
+    if (id) {
+      await api(`/api/v1/agent/ai/configs/${id}`, { method: 'PATCH', body });
+    } else {
+      const created = await api('/api/v1/agent/ai/configs', { method: 'POST', body });
+      id = created.config.id;
+      editingConfigId = id;
+      document.getElementById('ai-edit-title').textContent = `Edit "${body.label}"`;
+    }
+    const r = await api(`/api/v1/agent/ai/configs/${id}/test`, { method: 'POST' });
+    status.textContent = formatTestResult(r);
+    await refreshAiInfo();
+    paintAiConfigsList();
+  } catch (err) {
+    status.textContent = '✗ ' + err.message;
+    status.classList.add('error');
+  }
+});
+
+// Two-step delete: 1st click arms (red border + "Confirm?" button + 4s timer),
+// 2nd click within 4s deletes. Click anywhere else cancels.
+function armDelete(tile, doDelete) {
+  if (tile.dataset.armed === '1') return;       // already armed
+  tile.dataset.armed = '1';
+  tile.classList.add('arming');
+  const btn = tile.querySelector('.photo-del');
+  const originalLabel = btn.innerHTML;
+  btn.innerHTML = '✓ Confirm';
+  btn.title = 'Click again to delete · clears in 4s';
+
+  let cancelled = false;
+  const cancel = () => {
+    if (cancelled) return;
+    cancelled = true;
+    tile.dataset.armed = '0';
+    tile.classList.remove('arming');
+    btn.innerHTML = originalLabel;
+    btn.title = 'Remove';
+    document.removeEventListener('click', onDocClick, true);
+    clearTimeout(timer);
+  };
+  const onDocClick = (ev) => {
+    // Cancel if click is outside this tile (or on a non-delete element within).
+    if (!tile.contains(ev.target) || !ev.target.closest('.photo-del')) cancel();
+  };
+  const timer = setTimeout(cancel, 4000);
+  // Defer attaching so this very click event doesn't trigger cancel itself.
+  setTimeout(() => document.addEventListener('click', onDocClick, true), 0);
+
+  const onConfirm = async (ev) => {
+    if (cancelled) return;
+    ev.stopPropagation();
+    cancel();
+    try { await doDelete(); } catch (err) { alert(err.message); }
+  };
+  btn.addEventListener('click', onConfirm, { once: true });
+}
 
 function renderPhotoManager() {
   const wrap = $('#meal-photos');
@@ -621,24 +922,38 @@ function renderPhotoManager() {
     const badge = p.analysis ? '<span class="photo-analyzed">AI</span>' : '';
     tile.innerHTML = `
       <img src="${p.url}" alt="" />
+      <div class="photo-broken" hidden>
+        <div class="photo-broken-icon">⚠</div>
+        <div class="photo-broken-text">Image failed to load</div>
+      </div>
       ${badge}
       ${aiBtn}
       <button type="button" class="photo-del" title="Remove">✕</button>`;
-    tile.querySelector('.photo-del').addEventListener('click', async () => {
-      const mealId = mealForm.id.value;
-      if (mealId) {
-        try { await api(`/api/meals/${mealId}/photos/${p.id}`, { method: 'DELETE' }); }
-        catch (err) { alert(err.message); return; }
-      }
-      currentPhotos = currentPhotos.filter(x => x.id !== p.id);
-      renderPhotoManager();
-      refreshMeals().then(renderMealsList);
+    const img = tile.querySelector('img');
+    img.addEventListener('error', () => {
+      img.style.display = 'none';
+      tile.querySelector('.photo-broken').hidden = false;
+      tile.classList.add('broken');
+    });
+    tile.querySelector('.photo-del').addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      armDelete(tile, async () => {
+        const mealId = mealForm.id.value;
+        if (mealId) await api(`/api/meals/${mealId}/photos/${p.id}`, { method: 'DELETE' });
+        currentPhotos = currentPhotos.filter(x => x.id !== p.id);
+        renderPhotoManager();
+        refreshMeals().then(renderMealsList);
+      });
     });
     if (aiBtn) {
-      tile.querySelector('.photo-ai').addEventListener('click', () => analyzePhoto(p));
+      tile.querySelector('.photo-ai').addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        analyzePhoto(p);
+      });
     }
-    tile.querySelector('img').addEventListener('click', () => {
+    img.addEventListener('click', () => {
       if (p.analysis) showAnalysisDialog(p);
+      else openLightbox(p.url, p);
     });
     wrap.appendChild(tile);
   }
@@ -646,12 +961,31 @@ function renderPhotoManager() {
     const tile = document.createElement('div');
     tile.className = 'photo-tile pending';
     tile.innerHTML = `<img src="${pp.preview}" alt="" /><span class="photo-pending">pending</span><button type="button" class="photo-del" title="Remove">✕</button>`;
-    tile.querySelector('.photo-del').addEventListener('click', () => {
-      pendingPhotos = pendingPhotos.filter(x => x !== pp);
-      renderPhotoManager();
+    tile.querySelector('.photo-del').addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      armDelete(tile, () => {
+        pendingPhotos = pendingPhotos.filter(x => x !== pp);
+        renderPhotoManager();
+      });
     });
     wrap.appendChild(tile);
   }
+}
+
+// Minimal lightbox (click-through, esc/click to close).
+function openLightbox(url, photo) {
+  const overlay = document.createElement('div');
+  overlay.className = 'lightbox';
+  overlay.innerHTML = `
+    <button class="lightbox-close" title="Close">✕</button>
+    <img src="${url}" alt="" />`;
+  const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (ev) => { if (ev.key === 'Escape') close(); };
+  overlay.addEventListener('click', (ev) => {
+    if (ev.target === overlay || ev.target.classList.contains('lightbox-close')) close();
+  });
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(overlay);
 }
 
 function fileToDataURL(file) {
@@ -1460,4 +1794,4 @@ async function refreshNotesBanner() {
 })();
 // Honour an existing hash (e.g. landed via /#photos), otherwise default to home.
 const initialTab = (location.hash || '#home').slice(1);
-showTab(['home','pick','plan','history','photos','meals'].includes(initialTab) ? initialTab : 'home');
+showTab(['home','pick','plan','history','photos','meals','settings'].includes(initialTab) ? initialTab : 'home');

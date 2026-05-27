@@ -19,6 +19,7 @@
       <button class="tab" data-tab="history">History</button>
       <button class="tab" data-tab="photos">Photos</button>
       <button class="tab" data-tab="meals">Meals</button>
+      <button class="tab" data-tab="settings">Settings</button>
     </nav>
     <form id="logout-form"><button class="link" type="submit">Sign out</button></form>
   </header>
@@ -195,13 +196,30 @@
     <section class="view" data-view="meals" hidden>
       <h2>Meals</h2>
 
-      <details class="card" id="ai-card" hidden>
+      <details class="card" id="ai-card">
         <summary><strong>🤖 AI vision</strong> <span id="ai-summary" class="muted"></span></summary>
         <div class="row" style="align-items:center">
-          <button type="button" id="ai-test-btn">Test connection</button>
-          <span id="ai-test-result" class="muted" style="flex:1; font-size:.85rem; word-break:break-word"></span>
+          <label style="flex:1">
+            Active model
+            <select id="ai-quick-switch"></select>
+          </label>
+          <button type="button" id="ai-test-btn">Test</button>
+          <button type="button" data-tab="settings">Manage →</button>
         </div>
+        <div id="ai-warnings" class="ai-warnings"></div>
+        <span id="ai-test-result" class="muted" style="font-size:.85rem; word-break:break-word; display:block; margin-top:.4rem"></span>
       </details>
+
+      <dialog id="diagnostics-dialog" class="diagnostics-dialog">
+        <form method="dialog">
+          <h3>Diagnostics</h3>
+          <pre id="diagnostics-output" class="diagnostics-output">Loading…</pre>
+          <div class="row">
+            <button type="button" id="diagnostics-refresh">Refresh</button>
+            <button value="cancel" class="primary">Close</button>
+          </div>
+        </form>
+      </dialog>
 
       <details class="card">
         <summary><strong>Manage tags</strong></summary>
@@ -266,7 +284,87 @@
 
       <div id="meals-list" class="meal-gallery"></div>
     </section>
+
+    <!-- ============ SETTINGS ============ -->
+    <section class="view" data-view="settings" hidden>
+      <h2>Settings</h2>
+
+      <div class="card">
+        <div class="card-header">
+          <h3 style="margin:0">🤖 AI providers</h3>
+          <button type="button" id="ai-add-btn" class="primary">+ Add configuration</button>
+        </div>
+        <p class="muted" style="margin:.25rem 0 .75rem">
+          Add as many providers as you want — Anthropic, OpenAI, OpenRouter, Ollama, or any OpenAI-compatible server.
+          The one marked <span class="ai-active-pill">active</span> is used for photo analysis. You can switch between
+          them instantly from the Meals tab — no restart required.
+        </p>
+        <div id="ai-configs-list" class="ai-configs-list">
+          <p class="muted">Loading…</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin:0 0 .5rem">🔍 Diagnostics</h3>
+        <p class="muted" style="margin:0 0 .5rem">Health snapshot — photo files on disk vs. DB rows, counts, AI config sanity.</p>
+        <div class="row">
+          <button type="button" id="diagnostics-btn">Open diagnostics</button>
+        </div>
+      </div>
+    </section>
   </main>
+
+  <!-- ====== AI config edit dialog ====== -->
+  <dialog id="ai-edit-dialog" class="ai-edit-dialog">
+    <form method="dialog">
+      <h3 id="ai-edit-title">Add AI configuration</h3>
+
+      <label>
+        Label
+        <input type="text" id="ai-edit-label" required placeholder="e.g. Claude Sonnet" />
+      </label>
+
+      <label>
+        Provider
+        <select id="ai-edit-provider" required>
+          <option value="anthropic">Anthropic (Claude)</option>
+          <option value="openai">OpenAI</option>
+          <option value="openrouter">OpenRouter</option>
+          <option value="ollama">Ollama (local)</option>
+          <option value="openai-compatible">OpenAI-compatible (LM Studio, vLLM, …)</option>
+        </select>
+      </label>
+
+      <div id="ai-edit-hint" class="muted" style="font-size:.8rem; margin:-.25rem 0 .5rem"></div>
+
+      <label>
+        Model
+        <input type="text" id="ai-edit-model" placeholder="e.g. claude-3-5-sonnet-latest" />
+      </label>
+
+      <label>
+        API key <span class="muted" style="font-weight:400">(leave blank to keep existing)</span>
+        <input type="password" id="ai-edit-apikey" autocomplete="off" placeholder="sk-..." />
+      </label>
+
+      <label>
+        Base URL <span class="muted" style="font-weight:400">(optional)</span>
+        <input type="text" id="ai-edit-baseurl" placeholder="leave blank for default" />
+      </label>
+
+      <label style="display:flex; align-items:center; gap:.4rem">
+        <input type="checkbox" id="ai-edit-activate" style="width:auto" />
+        <span>Make this the active configuration</span>
+      </label>
+
+      <div class="row" style="margin-top:.5rem">
+        <button type="button" id="ai-edit-save" class="primary">Save</button>
+        <button type="button" id="ai-edit-test">Test now</button>
+        <button value="cancel">Cancel</button>
+      </div>
+      <p id="ai-edit-status" class="muted" style="font-size:.85rem; word-break:break-word; margin-top:.5rem"></p>
+    </form>
+  </dialog>
 
   <!-- ====== Auto-fill (suggest meals) dialog ====== -->
   <dialog id="suggest-dialog" class="suggest-dialog">

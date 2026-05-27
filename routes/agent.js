@@ -8,7 +8,11 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 
-const { db, attachTagsToMeals, safeJSON, setMealTags, DATA_DIR } = require('../db');
+const {
+  db, attachTagsToMeals, safeJSON, setMealTags, DATA_DIR,
+  VALID_AI_PROVIDERS, listAiConfigs, getAiConfigById,
+  createAiConfig, updateAiConfig, deleteAiConfig, activateAiConfig,
+} = require('../db');
 const { pickMeals, localTodayISO } = require('../lib/pick-algorithm');
 const ai = require('../lib/ai-provider');
 
@@ -36,18 +40,193 @@ router.get('/spec', (req, res) => {
       { method: 'DELETE', path: '/api/v1/agent/notes/:id',     desc: 'Delete a note' },
       { method: 'POST', path: '/api/v1/agent/photos/:photoId/analyze', desc: 'Run AI vision on a meal photo' },
       { method: 'POST', path: '/api/v1/agent/photos/:photoId/apply',   desc: 'Apply analysis output to the meal (tags/nutrition/description)' },
-      { method: 'GET',  path: '/api/v1/agent/ai/test',                 desc: 'Probe the configured AI provider; returns reachable model list when possible' },
+      { method: 'GET',  path: '/api/v1/agent/ai/configs',              desc: 'List AI configurations (api keys masked)' },
+      { method: 'POST', path: '/api/v1/agent/ai/configs',              desc: 'Create a new AI configuration' },
+      { method: 'PATCH',path: '/api/v1/agent/ai/configs/:id',           desc: 'Update an AI configuration' },
+      { method: 'DELETE',path:'/api/v1/agent/ai/configs/:id',           desc: 'Delete an AI configuration' },
+      { method: 'POST', path: '/api/v1/agent/ai/configs/:id/activate',  desc: 'Switch the active AI configuration (on the fly)' },
+      { method: 'POST', path: '/api/v1/agent/ai/configs/:id/test',      desc: 'Probe a specific AI configuration' },
+      { method: 'GET',  path: '/api/v1/agent/ai/test',                  desc: 'Probe the currently-active AI configuration' },
+      { method: 'GET',  path: '/api/v1/agent/diagnostics',              desc: 'Health snapshot: DB counts vs. disk files, AI config sanity, version' },
     ],
   });
 });
 
 // ---------------------------------------------------------------------------
-// GET /api/v1/agent/ai/test
-// Lightweight health check: confirms the AI provider URL + auth are reachable
-// and returns the upstream-visible model list when the provider exposes one.
+// GET /api/v1/agent/diagnostics
+// Surfaces the things that commonly go wrong in self-hosted deployments:
+//   - photo rows in DB vs. actual files on disk (catches permission / volume issues)
+//   - AI provider configuration sanity checks (catches the classic "wrong
+//     model name for the chosen provider" mistake)
 // ---------------------------------------------------------------------------
+router.get('/diagnostics', (_req, res) => {
+  const out = { version: require('../package.json').version, data_dir: DATA_DIR };
+
+  // ---- photos: DB rows vs. files on disk ----
+  const dbRows = db.prepare('SELECT id, meal_id, filename FROM meal_photos').all();
+  let onDisk = [];
+  try { onDisk = fs.readdirSync(PHOTO_DIR); } catch (err) { onDisk = []; out.photo_dir_error = err.message; }
+  const onDiskSet = new Set(onDisk);
+  const dbFileSet = new Set(dbRows.map(r => r.filename));
+  const missingFromDisk = dbRows.filter(r => !onDiskSet.has(r.filename));
+  const orphanedOnDisk  = onDisk.filter(f => !dbFileSet.has(f));
+  out.photos = {
+    db_rows: dbRows.length,
+    files_on_disk: onDisk.length,
+    photo_dir: PHOTO_DIR,
+    missing_from_disk: missingFromDisk.slice(0, 25),   // truncate for safety
+    missing_from_disk_count: missingFromDisk.length,
+    orphaned_on_disk: orphanedOnDisk.slice(0, 25),
+    orphaned_on_disk_count: orphanedOnDisk.length,
+    healthy: missingFromDisk.length === 0,
+  };
+
+  // ---- meals/entries counts (handy for support) ----
+  out.counts = {
+    meals:    db.prepare('SELECT COUNT(*) AS n FROM meals').get().n,
+    tags:     db.prepare('SELECT COUNT(*) AS n FROM tags').get().n,
+    entries:  db.prepare('SELECT COUNT(*) AS n FROM entries').get().n,
+    notes:    db.prepare('SELECT COUNT(*) AS n FROM agent_notes WHERE dismissed = 0').get().n,
+  };
+
+  // ---- AI configuration sanity ----
+  const aiInfo = ai.info();
+  const warnings = [];
+  const provider = aiInfo.provider;
+  const model    = aiInfo.model || '';
+  const base     = aiInfo.base_url || '';
+
+  // Common misconfigurations. Note: dotenv treats duplicate keys as "last
+  // value wins" — if a user has multiple AI_PROVIDER= blocks in .env, only
+  // the last one is active and the other variables (AI_MODEL, AI_BASE_URL)
+  // may have been set by a different block, producing a Frankenstein config.
+  if (provider === 'anthropic' && model && !/^claude/i.test(model)) {
+    warnings.push(`AI_MODEL "${model}" does not look like an Anthropic model (expected something starting with "claude-").`);
+  }
+  if (provider === 'openai' && model && (model.includes(':') || model.includes('/'))) {
+    warnings.push(`AI_MODEL "${model}" does not look like an OpenAI model. Did you mean provider=ollama (uses tag:version) or openrouter (uses vendor/model)?`);
+  }
+  if (provider === 'ollama' && /^claude/i.test(model)) {
+    warnings.push(`AI_MODEL "${model}" looks like an Anthropic model but provider=ollama.`);
+  }
+  if (provider === 'openrouter' && model && !model.includes('/') && !model.startsWith('openai/')) {
+    warnings.push(`AI_MODEL "${model}" is missing a vendor prefix — OpenRouter models look like "vendor/model" (e.g. "anthropic/claude-3.5-sonnet" or "openai/gpt-4o-mini").`);
+  }
+  if (provider === 'openrouter' && base && !/openrouter\.ai/.test(base)) {
+    warnings.push(`AI_BASE_URL "${base}" is set but provider=openrouter — this is pointing OpenRouter requests at a different server. Leave AI_BASE_URL blank to use openrouter.ai.`);
+  }
+  if (provider === 'anthropic' && base && !/anthropic\.com/.test(base)) {
+    warnings.push(`AI_BASE_URL "${base}" is set but provider=anthropic — likely leftover from another provider block.`);
+  }
+  if (provider === 'ollama' && /openai\.com|anthropic\.com|openrouter\.ai/.test(base)) {
+    warnings.push(`AI_BASE_URL "${base}" doesn't look like an Ollama server.`);
+  }
+  if (!model) {
+    warnings.push(`AI_MODEL is unset — using provider default "${aiInfo.model}". If the test fails, set AI_MODEL explicitly.`);
+  }
+
+  out.ai = {
+    ...aiInfo,
+    warnings,
+    note: warnings.length
+      ? 'Configuration looks inconsistent. If you have multiple AI_PROVIDER= lines in .env, dotenv uses the LAST one — your AI_MODEL and AI_BASE_URL may be left over from a different provider block. Comment out everything except the block you want.'
+      : 'OK',
+  };
+
+  res.json(out);
+});
+
+// ---------------------------------------------------------------------------
+// AI configurations — CRUD + activate + test.
+//   GET    /ai/configs              → list (api keys masked)
+//   POST   /ai/configs              → create (optional activate=true)
+//   PATCH  /ai/configs/:id          → update fields
+//   DELETE /ai/configs/:id          → remove
+//   POST   /ai/configs/:id/activate → switch the active config
+//   POST   /ai/configs/:id/test     → probe a specific config
+//   GET    /ai/test                 → probe the currently-active config
+//   GET    /ai/providers            → list supported provider names
+// ---------------------------------------------------------------------------
+router.get('/ai/providers', (_req, res) => {
+  res.json({ providers: VALID_AI_PROVIDERS });
+});
+
+router.get('/ai/configs', (_req, res) => {
+  res.json({ configs: listAiConfigs(), active: ai.info() });
+});
+
+router.post('/ai/configs', (req, res) => {
+  const b = req.body || {};
+  try {
+    const cfg = createAiConfig({
+      label:    b.label,
+      provider: b.provider,
+      model:    b.model    || '',
+      api_key:  b.api_key  || '',
+      base_url: b.base_url || '',
+      activate: b.activate === true,
+    });
+    res.status(201).json({ config: sanitizeForResponse(cfg) });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.patch('/ai/configs/:id', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+  const b = req.body || {};
+  const patch = {};
+  for (const k of ['label', 'provider', 'model', 'base_url']) {
+    if (k in b) patch[k] = b[k];
+  }
+  // Treat empty-string api_key as "no change" so the UI doesn't have to resend
+  // the secret on every edit. Use null to explicitly clear.
+  if (b.api_key === null) patch.api_key = '';
+  else if (typeof b.api_key === 'string' && b.api_key.length > 0) patch.api_key = b.api_key;
+
+  try {
+    const cfg = updateAiConfig(id, patch);
+    res.json({ config: sanitizeForResponse(cfg) });
+  } catch (err) {
+    res.status(err.message === 'config not found' ? 404 : 400).json({ error: err.message });
+  }
+});
+
+router.delete('/ai/configs/:id', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+  const ok = deleteAiConfig(id);
+  if (!ok) return res.status(404).json({ error: 'config not found' });
+  res.json({ ok: true });
+});
+
+router.post('/ai/configs/:id/activate', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+  try {
+    const cfg = activateAiConfig(id);
+    res.json({ config: sanitizeForResponse(cfg), active: ai.info() });
+  } catch (err) {
+    res.status(err.message === 'config not found' ? 404 : 400).json({ error: err.message });
+  }
+});
+
+router.post('/ai/configs/:id/test', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+  const cfg = getAiConfigById(id);
+  if (!cfg) return res.status(404).json({ error: 'config not found' });
+  try {
+    const result = await ai.testConnection(cfg);
+    res.json(result);
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
 router.get('/ai/test', async (_req, res) => {
-  if (!ai.isEnabled()) return res.status(503).json({ ok: false, ai: ai.info(), error: 'AI provider not configured' });
+  if (!ai.isEnabled()) return res.status(503).json({ ok: false, ai: ai.info(), error: 'No active AI configuration (or it is missing key/URL).' });
   try {
     const result = await ai.testConnection();
     res.json({ ai: ai.info(), ...result });
@@ -55,6 +234,16 @@ router.get('/ai/test', async (_req, res) => {
     res.status(502).json({ ok: false, ai: ai.info(), error: err.message });
   }
 });
+
+// Helper: never leak api_key in responses.
+function sanitizeForResponse(row) {
+  if (!row) return null;
+  const out = { ...row };
+  if (out.api_key) out.api_key = out.api_key.length > 8 ? out.api_key.slice(0, 4) + '…' + out.api_key.slice(-4) : '••••';
+  out.has_api_key = !!row.api_key;
+  out.is_active = !!out.is_active;
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // GET /api/v1/agent/state?back=14&forward=7

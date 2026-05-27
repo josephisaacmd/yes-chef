@@ -86,6 +86,21 @@ db.exec(`
     created_at  TEXT    DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_agent_notes_state ON agent_notes(dismissed, read, created_at);
+
+  -- Named AI provider configurations. Multiple can exist; exactly one is_active=1.
+  -- Lets users add/swap models from the UI without touching env vars or restarting.
+  CREATE TABLE IF NOT EXISTS ai_configs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    label       TEXT    NOT NULL,                -- user-facing name e.g. "Claude 3.5 Sonnet"
+    provider    TEXT    NOT NULL,                -- ollama | openai | openai-compatible | openrouter | anthropic
+    model       TEXT    DEFAULT '',
+    api_key     TEXT    DEFAULT '',              -- stored as-is; sent only to its provider
+    base_url    TEXT    DEFAULT '',              -- blank = provider default
+    is_active   INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT    DEFAULT (datetime('now')),
+    updated_at  TEXT    DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_ai_configs_active ON ai_configs(is_active);
 `);
 
 // One-off migrations for columns added after the original schema. better-sqlite3
@@ -244,6 +259,101 @@ function bulkImportMeals(rows, { mergeTags = true } = {}) {
   return tx(rows);
 }
 
+// --- AI config helpers --------------------------------------------------
+
+const VALID_AI_PROVIDERS = ['ollama', 'openai', 'openai-compatible', 'openrouter', 'anthropic'];
+
+function listAiConfigs({ includeSecrets = false } = {}) {
+  const rows = db.prepare('SELECT * FROM ai_configs ORDER BY id ASC').all();
+  return rows.map(r => ({
+    id: r.id,
+    label: r.label,
+    provider: r.provider,
+    model: r.model || '',
+    base_url: r.base_url || '',
+    api_key:  includeSecrets ? (r.api_key || '') : (r.api_key ? maskKey(r.api_key) : ''),
+    has_api_key: !!r.api_key,
+    is_active: !!r.is_active,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+  }));
+}
+function maskKey(k) {
+  if (!k) return '';
+  if (k.length <= 8) return '••••';
+  return k.slice(0, 4) + '…' + k.slice(-4);
+}
+function getActiveAiConfig() {
+  const row = db.prepare('SELECT * FROM ai_configs WHERE is_active = 1 LIMIT 1').get();
+  return row || null;
+}
+function getAiConfigById(id) {
+  return db.prepare('SELECT * FROM ai_configs WHERE id = ?').get(id) || null;
+}
+function createAiConfig({ label, provider, model = '', api_key = '', base_url = '', activate = false }) {
+  if (!label || !label.trim()) throw new Error('label is required');
+  if (!VALID_AI_PROVIDERS.includes(provider)) throw new Error(`provider must be one of: ${VALID_AI_PROVIDERS.join(', ')}`);
+  const info = db.prepare(
+    'INSERT INTO ai_configs (label, provider, model, api_key, base_url, is_active) VALUES (?, ?, ?, ?, ?, 0)'
+  ).run(label.trim(), provider, model || '', api_key || '', base_url || '');
+  if (activate) activateAiConfig(info.lastInsertRowid);
+  return getAiConfigById(info.lastInsertRowid);
+}
+function updateAiConfig(id, patch) {
+  const cur = getAiConfigById(id);
+  if (!cur) throw new Error('config not found');
+  const next = {
+    label:    patch.label    ?? cur.label,
+    provider: patch.provider ?? cur.provider,
+    model:    patch.model    ?? cur.model,
+    base_url: patch.base_url ?? cur.base_url,
+    api_key:  patch.api_key  ?? cur.api_key,
+  };
+  if (!VALID_AI_PROVIDERS.includes(next.provider)) throw new Error(`provider must be one of: ${VALID_AI_PROVIDERS.join(', ')}`);
+  db.prepare(
+    `UPDATE ai_configs SET label=?, provider=?, model=?, base_url=?, api_key=?,
+     updated_at=datetime('now') WHERE id=?`
+  ).run(next.label, next.provider, next.model, next.base_url, next.api_key, id);
+  return getAiConfigById(id);
+}
+function deleteAiConfig(id) {
+  const cur = getAiConfigById(id);
+  if (!cur) return false;
+  db.prepare('DELETE FROM ai_configs WHERE id = ?').run(id);
+  // If we just deleted the active one, promote the lowest-id remaining row.
+  if (cur.is_active) {
+    const next = db.prepare('SELECT id FROM ai_configs ORDER BY id ASC LIMIT 1').get();
+    if (next) activateAiConfig(next.id);
+  }
+  return true;
+}
+const activateAiConfig = db.transaction((id) => {
+  const cur = getAiConfigById(id);
+  if (!cur) throw new Error('config not found');
+  db.prepare('UPDATE ai_configs SET is_active = 0').run();
+  db.prepare('UPDATE ai_configs SET is_active = 1, updated_at = datetime(\'now\') WHERE id = ?').run(id);
+  return getAiConfigById(id);
+});
+
+// On first boot, if no AI configs exist but env vars are set, seed one from
+// the env. Keeps backward compatibility with the previous env-only model.
+(function seedAiFromEnv() {
+  const existing = db.prepare('SELECT COUNT(*) AS n FROM ai_configs').get().n;
+  if (existing > 0) return;
+  const provider = (process.env.AI_PROVIDER || '').toLowerCase().trim();
+  if (!provider || provider === 'none' || !VALID_AI_PROVIDERS.includes(provider)) return;
+  const label = `${provider} (from env)`;
+  const created = createAiConfig({
+    label,
+    provider,
+    model:    (process.env.AI_MODEL    || '').trim(),
+    api_key:  (process.env.AI_API_KEY  || '').trim(),
+    base_url: (process.env.AI_BASE_URL || '').trim(),
+    activate: true,
+  });
+  console.log(`[ai] seeded initial config from env: #${created.id} ${created.label}`);
+})();
+
 module.exports = {
   db,
   getOrCreateTag,
@@ -254,4 +364,13 @@ module.exports = {
   setMealTags,
   safeJSON,
   DATA_DIR,
+  // AI configs
+  VALID_AI_PROVIDERS,
+  listAiConfigs,
+  getActiveAiConfig,
+  getAiConfigById,
+  createAiConfig,
+  updateAiConfig,
+  deleteAiConfig,
+  activateAiConfig,
 };
