@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.0] — 2026-06-13
+
+### Added — Create meals inline from Plan & History
+
+- The meal picker (used when filling a Plan slot) now offers a **"+ Create …"** row when you type a name that doesn't exist yet. Picking it creates the meal and drops it straight into the slot — no round-trip to the Meals tab.
+- The new meal is added to local state immediately, so it's available in every subsequent picker and list.
+- **History** gains a **"+ Add meal"** button: pick a date + slot, choose (or create) a meal, and it's logged as eaten. Previously History was view/delete only.
+
+### Added — Agent API meal endpoints
+
+- `GET  /api/v1/agent/meals?q=&tag=` — list the meal library (with tags + nutrition) so an agent can avoid creating duplicates.
+- `POST /api/v1/agent/meals` — create a meal `{ name, notes?, tags?: string[], nutrition?: object }`. Returns `409` if the (case-insensitive) name already exists, `400` if name is missing.
+
+---
+
+## [0.5.0] — 2026-06-13
+
+### Added — Agent API token management in the UI
+
+- New **🔑 Agent API tokens** card under **Settings**. Create and revoke bearer tokens for external agents directly from the web UI — no `.env` editing, no container restart.
+- Tokens are generated server-side (32 random bytes / 64 hex chars), stored **hashed** (SHA-256) with only a 6-char prefix kept for display. The raw secret is shown **exactly once** in a reveal dialog with a copy button.
+- Revoking a token takes effect immediately (the next request with it gets a 401).
+- The auth middleware now accepts tokens from **both** the `AGENT_API_TOKENS` env var (bootstrap/legacy) **and** the DB-managed list.
+- Token management endpoints are **session-only**: an agent token cannot create or revoke tokens, preventing privilege escalation if one leaks.
+- Per-token `last_used_at` is tracked and shown in the list.
+
+### Added — Endpoints
+
+- `GET    /api/v1/agent/tokens` (session only)
+- `POST   /api/v1/agent/tokens` (session only; returns the secret once)
+- `DELETE /api/v1/agent/tokens/:id` (session only)
+
+### Changed
+
+- Startup log now reports both env-token and DB-token counts:
+  `[agent-auth] N env token(s) loaded …` / `[agent-auth] M token(s) managed in DB …`.
+
+### Migration
+
+- New table `agent_tokens` is created automatically on first boot. Existing `AGENT_API_TOKENS` env tokens keep working unchanged.
+
+---
+
+## [0.4.1] — 2026-05-24
+
+### Fixed — Agent API rejecting valid tokens in Docker
+
+- `AGENT_API_TOKENS` now has surrounding quotes and whitespace stripped from each token. docker-compose's `env_file` parser (unlike dotenv) does **not** strip quotes, so a `.env` line like `AGENT_API_TOKENS="abc"` arrived inside the container as the literal string `"abc"` (quotes included) and never matched the clean token an agent sent — producing a generic `401 unauthenticated`. Quoted/comma-spaced values now work.
+- Added a startup log line: `[agent-auth] N token(s) loaded: <prefix>…` (or a notice when none are set) so you can immediately confirm what the server actually parsed without exposing the secret.
+
+---
+
 ## [0.4.0] — 2026-05-23
 
 ### Added — Settings tab + multi-provider AI
@@ -187,6 +239,9 @@ Initial public release of `web-menu`.
 - Shared password auth (bcrypt-hashed at boot) and optional Google OAuth.
 - Docker single-container deployment with `better-sqlite3` and file-store sessions under `DATA_DIR`.
 
+[0.6.0]: https://github.com/josephisaac91/web-menu/releases/tag/v0.6.0
+[0.5.0]: https://github.com/josephisaac91/web-menu/releases/tag/v0.5.0
+[0.4.1]: https://github.com/josephisaac91/web-menu/releases/tag/v0.4.1
 [0.4.0]: https://github.com/josephisaac91/web-menu/releases/tag/v0.4.0
 [0.3.0]: https://github.com/josephisaac91/web-menu/releases/tag/v0.3.0
 [0.2.0]: https://github.com/josephisaac91/web-menu/releases/tag/v0.2.0

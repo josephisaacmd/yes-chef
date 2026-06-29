@@ -12,6 +12,7 @@ const {
   db, attachTagsToMeals, safeJSON, setMealTags, DATA_DIR,
   VALID_AI_PROVIDERS, listAiConfigs, getAiConfigById,
   createAiConfig, updateAiConfig, deleteAiConfig, activateAiConfig,
+  listAgentTokens, createAgentToken, deleteAgentToken,
 } = require('../db');
 const { pickMeals, localTodayISO } = require('../lib/pick-algorithm');
 const ai = require('../lib/ai-provider');
@@ -32,6 +33,8 @@ router.get('/spec', (req, res) => {
     endpoints: [
       { method: 'GET',  path: '/api/v1/agent/state',           desc: 'Recent + upcoming entries, summary stats' },
       { method: 'GET',  path: '/api/v1/agent/stats',           desc: 'Eating history statistics' },
+      { method: 'GET',  path: '/api/v1/agent/meals',           desc: 'List the meal library (filter by q / tag)' },
+      { method: 'POST', path: '/api/v1/agent/meals',           desc: 'Create a new meal { name, notes?, tags?, nutrition? }' },
       { method: 'GET',  path: '/api/v1/agent/recommendations', desc: 'Top-N meal suggestions (variety-tunable)' },
       { method: 'POST', path: '/api/v1/agent/plan/suggest',     desc: 'Suggest meals to fill date×slot cells (preview, does not write)' },
       { method: 'GET',  path: '/api/v1/agent/notes',           desc: 'List notes/reminders (?unread=1, ?dismissed=0)' },
@@ -47,6 +50,9 @@ router.get('/spec', (req, res) => {
       { method: 'POST', path: '/api/v1/agent/ai/configs/:id/activate',  desc: 'Switch the active AI configuration (on the fly)' },
       { method: 'POST', path: '/api/v1/agent/ai/configs/:id/test',      desc: 'Probe a specific AI configuration' },
       { method: 'GET',  path: '/api/v1/agent/ai/test',                  desc: 'Probe the currently-active AI configuration' },
+      { method: 'GET',  path: '/api/v1/agent/tokens',                   desc: 'List agent API tokens (session only)' },
+      { method: 'POST', path: '/api/v1/agent/tokens',                   desc: 'Create an agent API token (session only; returns secret once)' },
+      { method: 'DELETE',path:'/api/v1/agent/tokens/:id',               desc: 'Revoke an agent API token (session only)' },
       { method: 'GET',  path: '/api/v1/agent/diagnostics',              desc: 'Health snapshot: DB counts vs. disk files, AI config sanity, version' },
     ],
   });
@@ -235,6 +241,49 @@ router.get('/ai/test', async (_req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Agent API tokens — manage from the Settings UI.
+//   GET    /tokens       → list (prefix only, never the full secret)
+//   POST   /tokens       → create; returns the raw token EXACTLY ONCE
+//   DELETE /tokens/:id   → revoke
+// Token management is session-only: an agent token cannot mint or revoke
+// tokens (prevents privilege escalation if a token leaks).
+// ---------------------------------------------------------------------------
+function requireSession(req, res, next) {
+  if (req.auth?.kind === 'session') return next();
+  return res.status(403).json({ error: 'token management requires a browser login (session), not an API token' });
+}
+
+router.get('/tokens', requireSession, (_req, res) => {
+  res.json({ tokens: listAgentTokens() });
+});
+
+router.post('/tokens', requireSession, (req, res) => {
+  const label = (req.body?.label || '').trim();
+  if (!label) return res.status(400).json({ error: 'label is required' });
+  try {
+    const created = createAgentToken({ label });
+    // `token` is the raw secret — shown once, never stored or returned again.
+    res.status(201).json({
+      id: created.id,
+      label: created.label,
+      token: created.token,
+      token_prefix: created.token_prefix,
+      note: 'Copy this token now — it will not be shown again.',
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.delete('/tokens/:id', requireSession, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+  const ok = deleteAgentToken(id);
+  if (!ok) return res.status(404).json({ error: 'token not found' });
+  res.json({ ok: true });
+});
+
 // Helper: never leak api_key in responses.
 function sanitizeForResponse(row) {
   if (!row) return null;
@@ -362,6 +411,46 @@ router.get('/stats', (req, res) => {
     by_tag: byTag.slice(0, 20),
     by_month: byMonth,
   });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/agent/meals?q=&tag=
+// List the meal library (with tags + nutrition). Lets an agent check what
+// already exists before creating duplicates.
+// ---------------------------------------------------------------------------
+router.get('/meals', (req, res) => {
+  const q   = (req.query.q || '').trim().toLowerCase();
+  const tag = (req.query.tag || '').trim().toLowerCase();
+  let meals = db.prepare('SELECT * FROM meals ORDER BY name COLLATE NOCASE').all();
+  attachTagsToMeals(meals);
+  if (q)   meals = meals.filter(m => m.name.toLowerCase().includes(q));
+  if (tag) meals = meals.filter(m => (m.tags || []).some(t => t.name.toLowerCase() === tag));
+  res.json({ meals, count: meals.length });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/agent/meals
+// Body: { name (required), notes?, tags?: string[], nutrition?: object }
+// Create a meal. 409 if the name already exists (names are unique, case-insensitive).
+// ---------------------------------------------------------------------------
+router.post('/meals', (req, res) => {
+  const b = req.body || {};
+  const name = (b.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'name required' });
+  const tags = Array.isArray(b.tags) ? b.tags : [];
+  const notes = typeof b.notes === 'string' ? b.notes : '';
+  const nutrition = (b.nutrition && typeof b.nutrition === 'object') ? JSON.stringify(b.nutrition) : null;
+  try {
+    const info = db.prepare('INSERT INTO meals (name, notes, nutrition_json) VALUES (?, ?, ?)')
+      .run(name, notes, nutrition);
+    setMealTags(info.lastInsertRowid, tags);
+    const meal = db.prepare('SELECT * FROM meals WHERE id = ?').get(info.lastInsertRowid);
+    attachTagsToMeals([meal]);
+    res.status(201).json({ meal });
+  } catch (err) {
+    if (String(err).includes('UNIQUE')) return res.status(409).json({ error: 'meal already exists' });
+    throw err;
+  }
 });
 
 // ---------------------------------------------------------------------------

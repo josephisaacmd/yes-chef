@@ -343,6 +343,11 @@ dialog::backdrop { background: rgba(0,0,0,.4); }
   padding: .4rem .5rem; border-radius: .35rem; cursor: pointer;
 }
 .meal-picker-list li:hover { background: var(--chip); }
+.meal-picker-list li.create-new {
+  border: 1px dashed var(--line); margin-top: .35rem; color: var(--accent);
+}
+.meal-picker-list li.create-new:hover { background: rgba(34,197,94,.08); border-color: var(--accent); }
+.meal-picker-list li.busy { opacity: .5; pointer-events: none; }
 
 /* ---------- Notes banner ---------- */
 .notes-banner {
@@ -727,3 +732,16 @@ dialog::backdrop { background: rgba(0,0,0,.4); }
   .ai-config-row { flex-direction: column; }
   .ai-config-actions { flex-direction: row; flex-wrap: wrap; width: 100%; }
 }
+
+/* ---------- Token reveal ---------- */
+.token-reveal-box {
+  display: flex; align-items: center; gap: .5rem;
+  background: var(--chip); border: 1px solid var(--line);
+  border-radius: .4rem; padding: .5rem .6rem;
+}
+.token-reveal-box code {
+  flex: 1; font-size: .8rem; word-break: break-all;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+#token-copy-btn { flex: 0 0 auto; font-size: .8rem; }
+#token-create-status.error { color: var(--bad); }

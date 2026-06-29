@@ -407,26 +407,58 @@ async function assignSlot(date, slot, existing = null) {
 }
 
 // Reusable modal meal picker. Resolves with the chosen meal or null.
+// Typing a name that doesn't exist offers a "+ Create" row so a brand-new
+// meal can be added without leaving the Plan/History flow.
 function pickMealDialog() {
   return new Promise((resolve) => {
     const dlg    = $('#meal-picker');
     const search = $('#meal-picker-search');
     const list   = $('#meal-picker-list');
+    let settled = false;
+
+    function finish(value) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      dlg.close();
+      resolve(value);
+    }
 
     function paint(filter = '') {
-      const q = filter.toLowerCase();
+      const raw = filter.trim();
+      const q = raw.toLowerCase();
       list.innerHTML = '';
+      let exact = false;
       for (const m of state.meals) {
         if (q && !m.name.toLowerCase().includes(q)) continue;
+        if (q && m.name.toLowerCase() === q) exact = true;
         const li = document.createElement('li');
         const tagStr = m.tags.map(t => t.name).join(' · ');
-        li.innerHTML = `<strong>${m.name}</strong>${tagStr ? ` <span class="meta">— ${tagStr}</span>` : ''}`;
-        li.addEventListener('click', () => { dlg.close(); cleanup(); resolve(m); });
+        li.innerHTML = `<strong>${escapeHtml(m.name)}</strong>${tagStr ? ` <span class="meta">— ${escapeHtml(tagStr)}</span>` : ''}`;
+        li.addEventListener('click', () => finish(m));
+        list.appendChild(li);
+      }
+      // Offer to create a new meal from the typed text.
+      if (raw && !exact) {
+        const li = document.createElement('li');
+        li.className = 'create-new';
+        li.innerHTML = `<strong>+ Create “${escapeHtml(raw)}”</strong> <span class="meta">— new meal</span>`;
+        li.addEventListener('click', async () => {
+          if (settled) return;
+          li.classList.add('busy');
+          try {
+            const meal = await createMealInline(raw);
+            finish(meal);
+          } catch (err) {
+            li.classList.remove('busy');
+            alert(err.message);
+          }
+        });
         list.appendChild(li);
       }
     }
     function onInput() { paint(search.value); }
-    function onClose() { cleanup(); resolve(null); }
+    function onClose() { finish(null); }
     function cleanup() {
       search.removeEventListener('input', onInput);
       dlg.removeEventListener('close', onClose);
@@ -439,6 +471,14 @@ function pickMealDialog() {
     dlg.showModal();
     setTimeout(() => search.focus(), 0);
   });
+}
+
+// Create a meal on the fly and keep local state in sync so it's immediately
+// available in every picker / list.
+async function createMealInline(name) {
+  const created = await api('/api/meals', { method: 'POST', body: { name } });
+  await refreshMeals();
+  return state.meals.find(m => m.id === created.id) || created;
 }
 
 // ============================================================
@@ -563,6 +603,26 @@ async function renderHistory() {
 $('#history-prev').addEventListener('click', () => { historyAnchor.setMonth(historyAnchor.getMonth() - 1); renderHistory(); });
 $('#history-next').addEventListener('click', () => { historyAnchor.setMonth(historyAnchor.getMonth() + 1); renderHistory(); });
 $('#history-today').addEventListener('click', () => { historyAnchor = new Date(); historyAnchor.setDate(1); historyAnchor.setHours(0,0,0,0); renderHistory(); });
+
+// Add an eaten meal directly from the History page.
+$('#history-add').addEventListener('click', () => {
+  $('#history-add-date').value = todayISO();
+  $('#history-add-slot').value = 'dinner';
+  $('#history-add-status').textContent = '';
+  $('#history-add-dialog').showModal();
+});
+$('#history-add-pick').addEventListener('click', async () => {
+  const date = $('#history-add-date').value;
+  const slot = $('#history-add-slot').value;
+  if (!date) { $('#history-add-status').textContent = 'Pick a date first.'; return; }
+  $('#history-add-dialog').close();
+  const meal = await pickMealDialog();          // supports inline create
+  if (!meal) return;
+  try {
+    await api('/api/entries', { method: 'POST', body: { meal_id: meal.id, on_date: date, slot, status: 'eaten' } });
+    renderHistory();
+  } catch (err) { alert(err.message); }
+});
 
 // ============================================================
 //                          MEALS
@@ -709,7 +769,88 @@ document.getElementById('diagnostics-refresh')?.addEventListener('click', refres
 async function renderSettings() {
   await refreshAiInfo();
   paintAiConfigsList();
+  await renderTokens();
 }
+
+// ============================================================
+//                     AGENT TOKEN MANAGEMENT
+// ============================================================
+async function renderTokens() {
+  const wrap = document.getElementById('tokens-list');
+  if (!wrap) return;
+  let tokens = [];
+  try { tokens = (await api('/api/v1/agent/tokens')).tokens || []; }
+  catch (err) { wrap.innerHTML = `<p class="muted">Could not load tokens: ${escapeHtml(err.message)}</p>`; return; }
+  wrap.innerHTML = '';
+  if (!tokens.length) {
+    wrap.innerHTML = '<p class="muted">No tokens yet. Click <strong>+ Create token</strong> to make one for your agent.</p>';
+    return;
+  }
+  for (const t of tokens) {
+    const used = t.last_used_at ? `last used ${t.last_used_at}` : 'never used';
+    const row = document.createElement('div');
+    row.className = 'ai-config-row';
+    row.innerHTML = `
+      <div class="ai-config-info">
+        <div class="ai-config-label-row"><strong>${escapeHtml(t.label)}</strong></div>
+        <div class="ai-config-meta">
+          <span><b>Prefix:</b> ${escapeHtml(t.token_prefix)}…</span>
+          <span><b>Created:</b> ${escapeHtml(t.created_at)}</span>
+          <span>${escapeHtml(used)}</span>
+        </div>
+      </div>
+      <div class="ai-config-actions">
+        <button type="button" class="danger" data-act="revoke">Revoke</button>
+      </div>`;
+    row.querySelector('[data-act="revoke"]').addEventListener('click', async () => {
+      if (!confirm(`Revoke "${t.label}"? Any agent using it will immediately get 401s.`)) return;
+      try { await api(`/api/v1/agent/tokens/${t.id}`, { method: 'DELETE' }); await renderTokens(); }
+      catch (err) { alert(err.message); }
+    });
+    wrap.appendChild(row);
+  }
+}
+
+document.getElementById('token-add-btn')?.addEventListener('click', () => {
+  document.getElementById('token-label').value = '';
+  document.getElementById('token-create-status').textContent = '';
+  document.getElementById('token-create-dialog').showModal();
+});
+
+document.getElementById('token-create-save')?.addEventListener('click', async () => {
+  const label = document.getElementById('token-label').value.trim();
+  const status = document.getElementById('token-create-status');
+  if (!label) { status.textContent = 'Label is required.'; status.classList.add('error'); return; }
+  status.textContent = 'Creating…'; status.classList.remove('error');
+  try {
+    const created = await api('/api/v1/agent/tokens', { method: 'POST', body: { label } });
+    document.getElementById('token-create-dialog').close();
+    // Reveal the raw secret once.
+    document.getElementById('token-reveal-value').textContent = created.token;
+    document.getElementById('token-reveal-dialog').showModal();
+    await renderTokens();
+  } catch (err) {
+    status.textContent = '✗ ' + err.message;
+    status.classList.add('error');
+  }
+});
+
+document.getElementById('token-copy-btn')?.addEventListener('click', async () => {
+  const val = document.getElementById('token-reveal-value').textContent;
+  const btn = document.getElementById('token-copy-btn');
+  try {
+    await navigator.clipboard.writeText(val);
+    btn.textContent = '✓ Copied';
+    setTimeout(() => { btn.textContent = '📋 Copy'; }, 1500);
+  } catch {
+    // Clipboard API may be blocked on non-HTTPS; fall back to selection.
+    const range = document.createRange();
+    range.selectNodeContents(document.getElementById('token-reveal-value'));
+    const sel = window.getSelection();
+    sel.removeAllRanges(); sel.addRange(range);
+    btn.textContent = 'Select + ⌘C';
+  }
+});
 
 function paintAiConfigsList() {
   const wrap = document.getElementById('ai-configs-list');

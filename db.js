@@ -3,6 +3,7 @@
 
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const Database = require('better-sqlite3');
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -101,6 +102,17 @@ db.exec(`
     updated_at  TEXT    DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_ai_configs_active ON ai_configs(is_active);
+
+  -- Agent API tokens, manageable from the UI. The raw token is shown to the
+  -- user exactly once at creation; only a SHA-256 hash + short prefix is stored.
+  CREATE TABLE IF NOT EXISTS agent_tokens (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    label        TEXT    NOT NULL,
+    token_hash   TEXT    NOT NULL UNIQUE,
+    token_prefix TEXT    NOT NULL,             -- first 6 chars, for display
+    created_at   TEXT    DEFAULT (datetime('now')),
+    last_used_at TEXT
+  );
 `);
 
 // One-off migrations for columns added after the original schema. better-sqlite3
@@ -354,6 +366,57 @@ const activateAiConfig = db.transaction((id) => {
   console.log(`[ai] seeded initial config from env: #${created.id} ${created.label}`);
 })();
 
+// --- Agent token helpers ------------------------------------------------
+
+function hashToken(raw) {
+  return crypto.createHash('sha256').update(String(raw), 'utf8').digest('hex');
+}
+
+function listAgentTokens() {
+  return db.prepare('SELECT id, label, token_prefix, created_at, last_used_at FROM agent_tokens ORDER BY id ASC')
+    .all()
+    .map(r => ({
+      id: r.id,
+      label: r.label,
+      token_prefix: r.token_prefix,
+      created_at: r.created_at,
+      last_used_at: r.last_used_at || null,
+    }));
+}
+
+// Creates a token, returns the RAW token exactly once. Caller must surface it
+// immediately — it cannot be retrieved later (only the hash is stored).
+function createAgentToken({ label } = {}) {
+  if (!label || !label.trim()) throw new Error('label is required');
+  const raw = crypto.randomBytes(32).toString('hex');   // 64 hex chars
+  const token_hash = hashToken(raw);
+  const token_prefix = raw.slice(0, 6);
+  const info = db.prepare(
+    'INSERT INTO agent_tokens (label, token_hash, token_prefix) VALUES (?, ?, ?)'
+  ).run(label.trim(), token_hash, token_prefix);
+  return { id: info.lastInsertRowid, label: label.trim(), token: raw, token_prefix };
+}
+
+function deleteAgentToken(id) {
+  const info = db.prepare('DELETE FROM agent_tokens WHERE id = ?').run(id);
+  return info.changes > 0;
+}
+
+// Used by the auth middleware. Returns the matching row (and bumps
+// last_used_at) or null. Constant-ish: a single indexed hash lookup.
+function verifyAgentToken(raw) {
+  if (!raw) return null;
+  const row = db.prepare('SELECT id, label, token_prefix FROM agent_tokens WHERE token_hash = ?')
+    .get(hashToken(raw));
+  if (!row) return null;
+  db.prepare("UPDATE agent_tokens SET last_used_at = datetime('now') WHERE id = ?").run(row.id);
+  return row;
+}
+
+function agentTokenCount() {
+  return db.prepare('SELECT COUNT(*) AS n FROM agent_tokens').get().n;
+}
+
 module.exports = {
   db,
   getOrCreateTag,
@@ -373,4 +436,10 @@ module.exports = {
   updateAiConfig,
   deleteAiConfig,
   activateAiConfig,
+  // Agent tokens
+  listAgentTokens,
+  createAgentToken,
+  deleteAgentToken,
+  verifyAgentToken,
+  agentTokenCount,
 };
