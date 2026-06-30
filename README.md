@@ -4,7 +4,7 @@
 
 A self-hosted meal planner with a scoring-based meal picker, photo-aware AI nutrition analysis, and a clean agent API so autonomous AI assistants can push reminders, recommend meals, and help you plan the week — all from a single-container Docker app.
 
-Repository: <https://github.com/josephisaac91/web-menu> · See [CHANGELOG.md](CHANGELOG.md) for release notes.
+Repository: <https://github.com/josephisaacmd/yes-chef> · See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ---
 
@@ -40,7 +40,7 @@ Repository: <https://github.com/josephisaac91/web-menu> · See [CHANGELOG.md](CH
 ## Quick start (local, no Docker)
 
 ```bash
-git clone https://github.com/josephisaac91/web-menu.git yes-chef
+git clone https://github.com/josephisaacmd/yes-chef.git
 cd yes-chef
 cp .env.example .env        # edit APP_PASSWORD, SESSION_SECRET, SECURE_COOKIES=false
 npm install
@@ -55,7 +55,7 @@ npm start
 ### Build and run
 
 ```bash
-git clone https://github.com/josephisaac91/web-menu.git yes-chef
+git clone https://github.com/josephisaacmd/yes-chef.git
 cd yes-chef
 cp .env.example .env        # edit values — see Environment variables below
 docker compose up -d --build
