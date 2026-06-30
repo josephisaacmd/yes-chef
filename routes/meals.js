@@ -3,50 +3,11 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
-const crypto = require('crypto');
-const { db, setMealTags, attachTagsToMeals, bulkImportMeals, safeJSON, DATA_DIR } = require('../db');
+const { db, setMealTags, attachTagsToMeals, bulkImportMeals, safeJSON } = require('../db');
 const { pickMeals } = require('../lib/pick-algorithm');
-const comfy = require('../lib/comfyui');
+const { PHOTO_DIR, MAX_PHOTO_BYTES, MIME_EXT, mimeFromName, saveMealPhoto, generateMealImage } = require('../lib/photos');
 
 const router = express.Router();
-
-const PHOTO_DIR = path.join(DATA_DIR, 'photos');
-fs.mkdirSync(PHOTO_DIR, { recursive: true });
-
-const MIME_EXT = {
-  'image/jpeg': 'jpg',
-  'image/jpg':  'jpg',
-  'image/png':  'png',
-  'image/webp': 'webp',
-  'image/gif':  'gif',
-  'image/heic': 'heic',
-  'image/heif': 'heif',
-};
-const MAX_PHOTO_BYTES = 15 * 1024 * 1024; // 15 MB
-
-function mimeFromName(name) {
-  const ext = (name.split('.').pop() || '').toLowerCase();
-  return {
-    jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
-    webp: 'image/webp', gif: 'image/gif', heic: 'image/heic', heif: 'image/heif',
-  }[ext] || 'application/octet-stream';
-}
-
-// Writes image bytes to the photo dir, verifies the write, and inserts a
-// meal_photos row. Returns { id, filename, url }. Throws on disk failure.
-function saveMealPhoto(mealId, buf, ext) {
-  const filename = `${crypto.randomUUID()}.${ext}`;
-  const filePath = path.join(PHOTO_DIR, filename);
-  fs.writeFileSync(filePath, buf);
-  const stat = fs.statSync(filePath);
-  if (stat.size !== buf.length) throw new Error(`size mismatch: wrote ${buf.length}, on-disk ${stat.size}`);
-
-  const maxRow = db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM meal_photos WHERE meal_id = ?').get(mealId);
-  const sort_order = (maxRow?.m ?? -1) + 1;
-  const info = db.prepare('INSERT INTO meal_photos (meal_id, filename, sort_order) VALUES (?, ?, ?)')
-                 .run(mealId, filename, sort_order);
-  return { id: info.lastInsertRowid, filename, url: `/photos/${filename}` };
-}
 
 // Builds the JOIN + WHERE + GROUP HAVING fragment for tag filtering.
 // Returns { sql, params } that callers append after `FROM meals m`.
@@ -241,43 +202,17 @@ router.post('/:id/photos', (req, res) => {
 router.post('/:id/generate-image', async (req, res) => {
   const meal = db.prepare('SELECT id, name FROM meals WHERE id = ?').get(req.params.id);
   if (!meal) return res.status(404).json({ error: 'meal not found' });
-
-  const mode = req.body?.mode === 'img2img' ? 'img2img' : 'txt2img';
-  if (mode === 'txt2img' && !comfy.isEnabled()) {
-    return res.status(503).json({ error: 'ComfyUI is not configured. Set the base URL and a text-to-image workflow in Settings.', info: comfy.info() });
-  }
-  if (mode === 'img2img' && !comfy.hasImg2Img()) {
-    return res.status(503).json({ error: 'No image-to-image workflow is configured. Add one in Settings.', info: comfy.info() });
-  }
-
-  // For img2img, load the base photo bytes from disk.
-  let inputImage = null;
-  if (mode === 'img2img') {
-    const photoRow = req.body?.photo_id
-      ? db.prepare('SELECT id, filename FROM meal_photos WHERE id = ? AND meal_id = ?').get(req.body.photo_id, meal.id)
-      : db.prepare('SELECT id, filename FROM meal_photos WHERE meal_id = ? ORDER BY sort_order ASC, id ASC LIMIT 1').get(meal.id);
-    if (!photoRow) return res.status(400).json({ error: 'no base photo to transform — add a photo to this meal first' });
-    const basePath = path.join(PHOTO_DIR, photoRow.filename);
-    if (!fs.existsSync(basePath)) return res.status(404).json({ error: 'base photo file missing on disk' });
-    inputImage = { buffer: fs.readFileSync(basePath), mime: mimeFromName(photoRow.filename), filename: photoRow.filename };
-  }
-
-  const prompt = (req.body?.prompt && String(req.body.prompt).trim()) || comfy.buildPrompt(meal.name);
-  let result;
   try {
-    result = await comfy.generateImage({ prompt, mode, inputImage });
+    const saved = await generateMealImage(meal, {
+      mode:     req.body?.mode,
+      photo_id: req.body?.photo_id,
+      prompt:   req.body?.prompt,
+    });
+    res.status(201).json(saved);
   } catch (err) {
-    console.error('[comfyui] generate failed for meal', meal.id, `(${mode})`, '—', err.message);
-    return res.status(502).json({ error: 'image generation failed', detail: err.message });
-  }
-
-  const ext = (result.filename.split('.').pop() || 'png').toLowerCase();
-  try {
-    const saved = saveMealPhoto(meal.id, result.buffer, ext);
-    res.status(201).json({ ...saved, prompt });
-  } catch (err) {
-    console.error('[comfyui] save failed for meal', meal.id, '—', err.message);
-    res.status(500).json({ error: 'failed to save generated image', detail: err.message });
+    if (err.status) return res.status(err.status).json({ error: err.message, ...(err.detail ? { detail: err.detail } : {}) });
+    console.error('[comfyui] generate failed for meal', meal.id, '—', err.message);
+    res.status(500).json({ error: 'image generation failed', detail: err.message });
   }
 });
 

@@ -16,7 +16,8 @@ Repository: <https://github.com/josephisaac91/web-menu> · See [CHANGELOG.md](CH
 - **📋 Top-N recommendations** — preview the 5 best picks ranked by the algorithm
 - **📜 Flexible history** — log anything you ate on a given day; any number of entries per day, with an *optional* slot label (great for piping in eating-out purchases from a budget feed via the agent API, plus manual home-cooked entries). Monthly calendar + stats panel (variety index, streak, top meals, breakdowns).
 - **🎨 ComfyUI image generation** — generate a dish image for any meal using your own self-hosted [ComfyUI](https://github.com/comfyanonymous/ComfyUI) server: **text-to-image** from the meal name, or **image-to-image** that transforms one of the meal's photos into a stylized version
-- **🤖 Agent API** — Bearer-token gated endpoints under `/api/v1/agent/*` for autonomous AI agents (reminders, recommendations, state snapshots)
+- **🤖 Agent API** — Bearer-token gated endpoints under `/api/v1/agent/*` for autonomous AI agents (reminders, recommendations, state snapshots, logging/planning meals, image generation)
+- **🔌 MCP server** — talk to your planner from Claude Desktop / Claude Code: *"log that I had a burrito for lunch"*, *"suggest next week's lunches"*. See [`mcp/`](mcp/)
 - **🏷️ Tags** — free-form metadata per meal; manage / rename / delete from the Meals tab
 - **📥 CSV import** — bulk-import a food log; idempotent
 - **🔒 Auth** — shared household password (with 5-strike / 24-hour lockout), optional Google OAuth
@@ -337,6 +338,9 @@ yes-chef/
 │   ├── login.html            Login page
 │   ├── app.js                Vanilla JS SPA
 │   └── style.css             Styles (light + dark mode)
+├── mcp/                      MCP server (stdio) for Claude Desktop / Claude Code
+│   ├── server.js             Wraps the agent API as MCP tools
+│   └── README.md             Client setup
 ├── scripts/
 │   └── import-csv.js         CLI bulk importer
 ├── food-log.example.csv      Example CSV format
@@ -364,14 +368,23 @@ All endpoints live under `/api/v1/agent/*` and accept either a browser session *
 | GET   | `/api/v1/agent/state?back=14&forward=7` | Recent + upcoming entries, "needs planning" days, unread notes |
 | GET   | `/api/v1/agent/stats?days=365`  | Variety index, streak, top meals, breakdowns |
 | GET   | `/api/v1/agent/recommendations?variety=0.7&n=5&tag=quick` | Top-N picks from the scoring algorithm |
+| GET   | `/api/v1/agent/meals?q=&tag=`    | List the meal library |
+| POST  | `/api/v1/agent/meals`           | Create a meal `{ name, tags?, notes? }` |
+| POST  | `/api/v1/agent/entries`         | Log/plan a meal `{ meal_id, on_date?, slot?, status? }` |
+| POST  | `/api/v1/agent/plan/suggest`    | Preview meals to fill date×slot cells (does not write) |
+| POST  | `/api/v1/agent/meals/:id/generate-image` | Generate a ComfyUI image `{ prompt?, mode?, photo_id? }` |
 | GET   | `/api/v1/agent/notes`           | List notes (`?unread=1`, `?dismissed=0`) |
 | POST  | `/api/v1/agent/notes`           | Push a reminder: `{ kind, text, due_date?, meta? }` |
 | PATCH | `/api/v1/agent/notes/:id`       | `{ read: true }` or `{ dismissed: true }` |
 | DELETE| `/api/v1/agent/notes/:id`       | Delete a note |
-| POST  | `/api/v1/agent/photos/:photoId/analyze` | Run vision provider on a meal photo |
-| POST  | `/api/v1/agent/photos/:photoId/apply`   | Apply analysis to the meal: `{ tags?, nutrition?, description? }` |
 
 **Note kinds** are `info`, `reminder`, `recommendation`, `warning`. Notes appear as a dismissable banner across the top of the web UI, so an agent that posts *"Take chicken out of freezer for tomorrow"* surfaces to the user immediately.
+
+`POST /api/v1/agent/entries` is the bearer-friendly way to log meals — point your budget-import script at it with a token, no browser session needed. `slot` is optional; `on_date` defaults to today; `status` defaults to `eaten`.
+
+### MCP server
+
+For conversational use from **Claude Desktop / Claude Code**, a stdio MCP server wraps these endpoints as tools (`log_meal`, `suggest_week`, `get_state`, `generate_meal_image`, …). See [`mcp/README.md`](mcp/README.md) for setup.
 
 ### Example: weekly planning reminder cron
 

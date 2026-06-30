@@ -1,6 +1,6 @@
 {
   "name": "yes-chef",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "yes-chef — Your Smart Menu Planner. Weekly lunch meal-prep planner, flexible eating history, ComfyUI image generation & agent API.",
   "main": "server.js",
   "scripts": {

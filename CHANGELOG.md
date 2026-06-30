@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.0] — 2026-06-30
+
+### Added — MCP server for Claude Desktop / Claude Code
+
+- New `mcp/` package: a stdio [Model Context Protocol](https://modelcontextprotocol.io) server that wraps the agent API as tools, so you can drive yes-chef conversationally — *"log that I had a burrito for lunch"*, *"suggest next week's lunches"*, *"generate an image for the salmon bowl"*. Configured with `YESCHEF_BASE_URL` + an agent token; see `mcp/README.md`.
+- Tools: `list_meals`, `get_state`, `get_stats`, `get_recommendations`, `suggest_week`, `create_meal`, `log_meal`, `push_note`, `generate_meal_image`.
+
+### Added — Bearer-accessible write endpoints
+
+- `POST /api/v1/agent/entries` — log (eaten) or plan a meal `{ meal_id, on_date?, slot?, status? }` with a token. This is the bearer-friendly path for budget-import scripts; previously entry writes required a browser session. `slot` optional, `on_date` defaults to today, `status` defaults to `eaten`.
+- `POST /api/v1/agent/meals/:id/generate-image` — ComfyUI generation over the agent API.
+- Photo-save + ComfyUI generation logic factored into `lib/photos.js` and shared by the session and agent routes.
+
+---
+
 ## [0.7.0] — 2026-06-30
 
 ### Changed — Planner is now a weekly lunch meal-prep view

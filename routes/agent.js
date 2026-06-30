@@ -18,6 +18,7 @@ const {
 const { pickMeals, localTodayISO } = require('../lib/pick-algorithm');
 const ai = require('../lib/ai-provider');
 const comfy = require('../lib/comfyui');
+const { generateMealImage } = require('../lib/photos');
 
 const router = express.Router();
 
@@ -37,6 +38,8 @@ router.get('/spec', (req, res) => {
       { method: 'GET',  path: '/api/v1/agent/stats',           desc: 'Eating history statistics' },
       { method: 'GET',  path: '/api/v1/agent/meals',           desc: 'List the meal library (filter by q / tag)' },
       { method: 'POST', path: '/api/v1/agent/meals',           desc: 'Create a new meal { name, notes?, tags?, nutrition? }' },
+      { method: 'POST', path: '/api/v1/agent/entries',         desc: 'Log/plan a meal { meal_id, on_date?, slot?, status? }' },
+      { method: 'POST', path: '/api/v1/agent/meals/:id/generate-image', desc: 'Generate a ComfyUI image for a meal { prompt?, mode?, photo_id? }' },
       { method: 'GET',  path: '/api/v1/agent/recommendations', desc: 'Top-N meal suggestions (variety-tunable)' },
       { method: 'POST', path: '/api/v1/agent/plan/suggest',     desc: 'Suggest meals to fill date×slot cells (preview, does not write)' },
       { method: 'GET',  path: '/api/v1/agent/notes',           desc: 'List notes/reminders (?unread=1, ?dismissed=0)' },
@@ -495,6 +498,61 @@ router.post('/meals', (req, res) => {
   } catch (err) {
     if (String(err).includes('UNIQUE')) return res.status(409).json({ error: 'meal already exists' });
     throw err;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/agent/entries
+// Body: { meal_id, on_date?, slot?, status?, notes?, rating? }
+// Log (status='eaten') or plan (status='planned') a meal. Bearer-accessible so
+// external agents and budget-import scripts can write entries without a
+// browser session. slot is optional (""=no slot); on_date defaults to today.
+// ---------------------------------------------------------------------------
+const ENTRY_SLOTS = new Set(['breakfast', 'lunch', 'side', 'dinner', 'snack']);
+const ENTRY_STATUSES = new Set(['planned', 'eaten']);
+router.post('/entries', (req, res) => {
+  const b = req.body || {};
+  const meal_id = b.meal_id;
+  const on_date = b.on_date || localTodayISO();
+  const slot    = b.slot == null ? '' : String(b.slot);
+  const status  = b.status || 'eaten';
+  const notes   = typeof b.notes === 'string' ? b.notes : '';
+  const rating  = b.rating ?? null;
+
+  if (!meal_id) return res.status(400).json({ error: 'meal_id required' });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(on_date)) return res.status(400).json({ error: 'on_date must be YYYY-MM-DD' });
+  if (!(slot === '' || ENTRY_SLOTS.has(slot))) return res.status(400).json({ error: 'bad slot' });
+  if (!ENTRY_STATUSES.has(status)) return res.status(400).json({ error: 'bad status' });
+  const meal = db.prepare('SELECT id, name FROM meals WHERE id = ?').get(meal_id);
+  if (!meal) return res.status(400).json({ error: 'meal does not exist' });
+
+  const info = db.prepare(`
+    INSERT INTO entries (meal_id, on_date, slot, status, notes, rating)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(meal_id, on_date, slot, status, notes, rating);
+  const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(info.lastInsertRowid);
+  row.meal = { id: meal.id, name: meal.name };
+  res.status(201).json(row);
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/agent/meals/:id/generate-image
+// Body: { prompt?, mode?: 'txt2img'|'img2img', photo_id? }
+// Bearer-accessible ComfyUI generation; saves the result as a meal photo.
+// ---------------------------------------------------------------------------
+router.post('/meals/:id/generate-image', async (req, res) => {
+  const meal = db.prepare('SELECT id, name FROM meals WHERE id = ?').get(req.params.id);
+  if (!meal) return res.status(404).json({ error: 'meal not found' });
+  try {
+    const saved = await generateMealImage(meal, {
+      mode:     req.body?.mode,
+      photo_id: req.body?.photo_id,
+      prompt:   req.body?.prompt,
+    });
+    res.status(201).json(saved);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message, ...(err.detail ? { detail: err.detail } : {}) });
+    res.status(500).json({ error: 'image generation failed', detail: err.message });
   }
 });
 
