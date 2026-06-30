@@ -113,6 +113,14 @@ db.exec(`
     created_at   TEXT    DEFAULT (datetime('now')),
     last_used_at TEXT
   );
+
+  -- Generic key/value store for app-level settings (e.g. ComfyUI image-gen
+  -- config). Values are JSON strings.
+  CREATE TABLE IF NOT EXISTS app_settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
 `);
 
 // One-off migrations for columns added after the original schema. better-sqlite3
@@ -417,6 +425,38 @@ function agentTokenCount() {
   return db.prepare('SELECT COUNT(*) AS n FROM agent_tokens').get().n;
 }
 
+// --- App settings (key/value JSON) --------------------------------------
+
+function getSetting(key, fallback = null) {
+  const row = db.prepare('SELECT value FROM app_settings WHERE key = ?').get(key);
+  if (!row) return fallback;
+  const parsed = safeJSON(row.value);
+  return parsed == null ? fallback : parsed;
+}
+
+function setSetting(key, value) {
+  db.prepare(`
+    INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+  `).run(key, JSON.stringify(value ?? null));
+  return getSetting(key);
+}
+
+// On first boot, seed the ComfyUI config from env vars if present and no
+// config has been saved yet. Mirrors the AI-config env seeding above.
+(function seedComfyUIFromEnv() {
+  const existing = db.prepare(`SELECT 1 FROM app_settings WHERE key = 'comfyui'`).get();
+  if (existing) return;
+  const base = (process.env.COMFYUI_BASE_URL || '').trim();
+  if (!base) return;
+  setSetting('comfyui', {
+    base_url:        base,
+    workflow_json:   (process.env.COMFYUI_WORKFLOW_JSON || '').trim(),
+    prompt_template: (process.env.COMFYUI_PROMPT_TEMPLATE || '').trim(),
+  });
+  console.log(`[comfyui] seeded config from env: base=${base}`);
+})();
+
 module.exports = {
   db,
   getOrCreateTag,
@@ -442,4 +482,7 @@ module.exports = {
   deleteAgentToken,
   verifyAgentToken,
   agentTokenCount,
+  // App settings
+  getSetting,
+  setSetting,
 };

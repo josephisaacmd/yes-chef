@@ -223,6 +223,7 @@ label input, label select, label textarea { margin-top: .25rem; color: var(--ink
 }
 .slot-dot[data-slot=breakfast] { background: #f59e0b; }
 .slot-dot[data-slot=lunch]     { background: #10b981; }
+.slot-dot[data-slot=side]      { background: #84cc16; }
 .slot-dot[data-slot=dinner]    { background: #6366f1; }
 .slot-dot[data-slot=snack]     { background: #ec4899; }
 

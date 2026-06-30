@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.0] — 2026-06-30
+
+### Changed — Planner is now a weekly lunch meal-prep view
+
+- The **Plan** tab is now a single Monday–Friday work-week focused on the lunch you meal-prep for work, with a **Lunch** slot and an optional **Veggie side** per weekday. Breakfast & dinner are intentionally left out — figured out on the fly.
+- Removed the 1 / 2 / 3 / 5 / 7-day selector; navigation now moves a whole week at a time.
+- The **Home** "Today" card became **"This week's lunches"**, and the auto-fill dialog now offers Lunch + Veggie side.
+
+### Changed — Flexible eating history
+
+- Entry **slots are now optional**. You can log any number of meals on a day with no required breakfast/lunch/dinner slot — `slot` accepts `""` (no slot) in addition to the known labels. This makes it easy to pipe eating-out purchases from a budget feed (via the agent API / `POST /api/entries`) alongside manually-logged home-cooked meals.
+- The History "+ Add meal" dialog defaults to no slot and notes that you can log as many meals per day as you like.
+
+### Added — ComfyUI image generation
+
+- Generate a dish image for any meal using your own self-hosted ComfyUI server. New **Settings → ComfyUI** card (base URL, prompt template, workflow JSON with a `%prompt%` placeholder) and a **🎨 Generate image** button on the Meals tab.
+- New `lib/comfyui.js` client (queue `/prompt` → poll `/history` → download `/view`) and endpoints:
+  - `GET/PUT /api/v1/agent/comfyui`, `POST /api/v1/agent/comfyui/test`
+  - `POST /api/meals/:id/generate-image`
+- Config is stored in a new `app_settings` key/value table and can be seeded from `COMFYUI_BASE_URL` / `COMFYUI_WORKFLOW_JSON` / `COMFYUI_PROMPT_TEMPLATE`.
+
+### Changed — AI photo analysis & nutrition hidden
+
+- AI photo analysis and per-meal nutrition/macros are **removed from the UI** for now. The provider code (`lib/ai-provider.js`), its agent endpoints, and the `nutrition_json` / `analysis_json` database columns are left intact so the feature can be re-enabled later with minimal work.
+
+---
+
 ## [0.6.0] — 2026-06-13
 
 ### Added — Create meals inline from Plan & History

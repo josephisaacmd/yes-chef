@@ -13,9 +13,11 @@ const {
   VALID_AI_PROVIDERS, listAiConfigs, getAiConfigById,
   createAiConfig, updateAiConfig, deleteAiConfig, activateAiConfig,
   listAgentTokens, createAgentToken, deleteAgentToken,
+  getSetting, setSetting,
 } = require('../db');
 const { pickMeals, localTodayISO } = require('../lib/pick-algorithm');
 const ai = require('../lib/ai-provider');
+const comfy = require('../lib/comfyui');
 
 const router = express.Router();
 
@@ -50,6 +52,9 @@ router.get('/spec', (req, res) => {
       { method: 'POST', path: '/api/v1/agent/ai/configs/:id/activate',  desc: 'Switch the active AI configuration (on the fly)' },
       { method: 'POST', path: '/api/v1/agent/ai/configs/:id/test',      desc: 'Probe a specific AI configuration' },
       { method: 'GET',  path: '/api/v1/agent/ai/test',                  desc: 'Probe the currently-active AI configuration' },
+      { method: 'GET',  path: '/api/v1/agent/comfyui',                  desc: 'Get ComfyUI image-generation config' },
+      { method: 'PUT',  path: '/api/v1/agent/comfyui',                  desc: 'Save ComfyUI config { base_url, workflow_json, prompt_template }' },
+      { method: 'POST', path: '/api/v1/agent/comfyui/test',            desc: 'Probe the ComfyUI server is reachable' },
       { method: 'GET',  path: '/api/v1/agent/tokens',                   desc: 'List agent API tokens (session only)' },
       { method: 'POST', path: '/api/v1/agent/tokens',                   desc: 'Create an agent API token (session only; returns secret once)' },
       { method: 'DELETE',path:'/api/v1/agent/tokens/:id',               desc: 'Revoke an agent API token (session only)' },
@@ -238,6 +243,43 @@ router.get('/ai/test', async (_req, res) => {
     res.json({ ai: ai.info(), ...result });
   } catch (err) {
     res.status(502).json({ ok: false, ai: ai.info(), error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ComfyUI image generation config.
+//   GET  /comfyui        → current config + status
+//   PUT  /comfyui        → save { base_url, workflow_json, prompt_template }
+//   POST /comfyui/test   → probe the server is reachable
+// The actual image generation lives on POST /api/meals/:id/generate-image.
+// ---------------------------------------------------------------------------
+router.get('/comfyui', (_req, res) => {
+  const cfg = comfy.getConfig();
+  res.json({ config: cfg, info: comfy.info() });
+});
+
+router.put('/comfyui', (req, res) => {
+  const b = req.body || {};
+  const cfg = {
+    base_url:        typeof b.base_url === 'string' ? b.base_url.trim() : '',
+    workflow_json:   typeof b.workflow_json === 'string' ? b.workflow_json.trim() : '',
+    prompt_template: typeof b.prompt_template === 'string' ? b.prompt_template.trim() : '',
+  };
+  setSetting('comfyui', cfg);
+  res.json({ config: comfy.getConfig(), info: comfy.info() });
+});
+
+router.post('/comfyui/test', async (req, res) => {
+  const b = req.body || {};
+  // Allow testing an unsaved base_url passed in the body; fall back to stored.
+  const cfg = (typeof b.base_url === 'string' && b.base_url.trim())
+    ? { base_url: b.base_url.trim(), workflow_json: comfy.getConfig().workflow_json }
+    : undefined;
+  try {
+    const result = await comfy.testConnection(cfg);
+    res.json(result);
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err.message });
   }
 });
 

@@ -6,8 +6,11 @@ const { db } = require('../db');
 
 const router = express.Router();
 
+// Known slot labels. Slot is now OPTIONAL — an empty string means "no slot"
+// (just something eaten that day). Any number of entries may share a day.
 const SLOTS = new Set(['breakfast', 'lunch', 'side', 'dinner', 'snack']);
 const STATUSES = new Set(['planned', 'eaten']);
+const validSlot = (s) => s === '' || SLOTS.has(s);
 
 function hydrate(rows) {
   if (!rows.length) return rows;
@@ -37,9 +40,9 @@ router.get('/', (req, res) => {
 
 // POST /api/entries { meal_id, on_date, slot?, status?, notes?, rating? }
 router.post('/', (req, res) => {
-  const { meal_id, on_date, slot = 'dinner', status = 'planned', notes = '', rating = null } = req.body || {};
+  const { meal_id, on_date, slot = '', status = 'planned', notes = '', rating = null } = req.body || {};
   if (!meal_id || !on_date) return res.status(400).json({ error: 'meal_id and on_date required' });
-  if (!SLOTS.has(slot))     return res.status(400).json({ error: 'bad slot' });
+  if (!validSlot(slot))     return res.status(400).json({ error: 'bad slot' });
   if (!STATUSES.has(status)) return res.status(400).json({ error: 'bad status' });
   const meal = db.prepare('SELECT id FROM meals WHERE id = ?').get(meal_id);
   if (!meal) return res.status(400).json({ error: 'meal does not exist' });
@@ -61,7 +64,7 @@ router.patch('/:id', (req, res) => {
   const params = [];
   for (const f of fields) {
     if (f in (req.body || {})) {
-      if (f === 'slot' && !SLOTS.has(req.body.slot)) return res.status(400).json({ error: 'bad slot' });
+      if (f === 'slot' && !validSlot(req.body.slot)) return res.status(400).json({ error: 'bad slot' });
       if (f === 'status' && !STATUSES.has(req.body.status)) return res.status(400).json({ error: 'bad status' });
       updates.push(`${f} = ?`);
       params.push(req.body[f]);

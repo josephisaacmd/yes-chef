@@ -2,7 +2,7 @@
 
 > **Your Smart Menu Planner**
 
-A self-hosted meal planner with a scoring-based meal picker, photo-aware AI nutrition analysis, and a clean agent API so autonomous AI assistants can push reminders, recommend meals, and help you plan the week — all from a single-container Docker app.
+A self-hosted meal planner focused on weekly lunch meal-prep: pick the lunch (plus an optional veggie side) you'll prep for work each weekday, keep a flexible day-by-day log of everything you actually eat, generate dish images with your own ComfyUI server, and let autonomous AI assistants push reminders and recommend meals through a clean agent API — all from a single-container Docker app.
 
 Repository: <https://github.com/josephisaac91/web-menu> · See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
@@ -10,17 +10,19 @@ Repository: <https://github.com/josephisaac91/web-menu> · See [CHANGELOG.md](CH
 
 ## Features
 
+- **📅 Weekly lunch planner** — plan the lunch you'll meal-prep for work each weekday (Mon–Fri), plus an optional veggie side. Breakfast & dinner are figured out on the fly.
 - **🎲 Pick a meal** — tag filter, recency-aware scoring algorithm with a tunable **variety** knob (0 = pure random → 1 = strongly prefer novel / under-eaten meals)
 - **✨ Try something new** — surfaces meals you've never eaten first, then the longest-ago ones
 - **📋 Top-N recommendations** — preview the 5 best picks ranked by the algorithm
-- **📅 Adaptive planner** — 1 / 2 / 3 / 5 / 7-day views with separate Lunch + Veg side slots
-- **📜 History calendar** — monthly calendar plus a stats panel (variety index, streak, top meals, breakdowns by slot / tag / month)
-- **🤖 Agent API** — Bearer-token gated endpoints under `/api/v1/agent/*` for autonomous AI agents (reminders, recommendations, state snapshots, photo analysis)
-- **🧠 AI photo analysis** — pluggable vision provider (OpenAI / Anthropic / Ollama) auto-tags meals and estimates nutrition (calories, macros, portion)
+- **📜 Flexible history** — log anything you ate on a given day; any number of entries per day, with an *optional* slot label (great for piping in eating-out purchases from a budget feed via the agent API, plus manual home-cooked entries). Monthly calendar + stats panel (variety index, streak, top meals, breakdowns).
+- **🎨 ComfyUI image generation** — generate a dish image for any meal using your own self-hosted [ComfyUI](https://github.com/comfyanonymous/ComfyUI) server and save it as the meal's photo
+- **🤖 Agent API** — Bearer-token gated endpoints under `/api/v1/agent/*` for autonomous AI agents (reminders, recommendations, state snapshots)
 - **🏷️ Tags** — free-form metadata per meal; manage / rename / delete from the Meals tab
 - **📥 CSV import** — bulk-import a food log; idempotent
 - **🔒 Auth** — shared household password (with 5-strike / 24-hour lockout), optional Google OAuth
 - **🐳 Docker-first** — single container, SQLite database, no external services required
+
+> **Note:** AI photo analysis & per-meal nutrition/macros are currently disabled in the UI. The provider code and database columns are intact, so they can be re-enabled later — see [AI photo analysis](#ai-photo-analysis-disabled).
 
 ---
 
@@ -182,6 +184,9 @@ The compose file binds only to `127.0.0.1:3000` so the app is not directly reach
 | `GOOGLE_CLIENT_SECRET` | | _(disabled)_ | Google OAuth client secret |
 | `ALLOWED_EMAILS` | | _(all)_ | Comma-separated Gmail addresses allowed to sign in via Google |
 | `PUBLIC_BASE_URL` | | _(disabled)_ | Your public URL, e.g. `https://menu.yourdomain.com` — required for OAuth redirect |
+| `COMFYUI_BASE_URL` | | _(disabled)_ | ComfyUI server URL for image generation, e.g. `http://localhost:8188`. Manageable from Settings → ComfyUI after first boot |
+| `COMFYUI_WORKFLOW_JSON` | | _(blank)_ | ComfyUI workflow (API format) seed, containing the `%prompt%` placeholder. Usually easier to paste in the Settings UI |
+| `COMFYUI_PROMPT_TEMPLATE` | | _(built-in)_ | Prompt template; `{meal}` is replaced with the meal name |
 
 Generate a good `SESSION_SECRET`:
 ```bash
@@ -286,9 +291,11 @@ All endpoints require authentication. All request and response bodies are JSON.
 | `PATCH` | `/api/entries/:id` | Partial update — e.g. flip `status` from `planned` to `eaten` |
 | `DELETE` | `/api/entries/:id` | Remove |
 
-`slot` ∈ `breakfast | lunch | dinner | snack`  
+`slot` is **optional** — `breakfast | lunch | side | dinner | snack` or `""` (no slot). Any number of entries may share a date.  
 `status` ∈ `planned | eaten`  
 Dates are `YYYY-MM-DD`.
+
+The weekly lunch planner uses `slot: "lunch"` (and `slot: "side"` for the veggie side) with `status: "planned"`. The history log accepts entries with any slot or none.
 
 ---
 
@@ -323,9 +330,10 @@ yes-chef/
 │   └── agent.js              Agent API: stats, recommendations, notes, photo AI
 ├── lib/
 │   ├── pick-algorithm.js     Variety-tunable scoring picker
-│   └── ai-provider.js        Pluggable vision provider (OpenAI / Anthropic / Ollama)
+│   ├── comfyui.js            ComfyUI image-generation client
+│   └── ai-provider.js        Pluggable vision provider (currently UI-disabled)
 ├── public/
-│   ├── index.html            App shell (4 tabs + notes banner)
+│   ├── index.html            App shell (tabs + notes banner)
 │   ├── login.html            Login page
 │   ├── app.js                Vanilla JS SPA
 │   └── style.css             Styles (light + dark mode)
@@ -382,9 +390,43 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 ---
 
-## AI photo analysis
+## ComfyUI image generation
 
-The Meals view shows a 🤖 button on each photo when an AI provider is configured. Click it to analyze the image and get back structured JSON:
+Generate a dish image for any meal using your own self-hosted [ComfyUI](https://github.com/comfyanonymous/ComfyUI) server.
+
+### Setup
+
+1. In ComfyUI, build the workflow you want (model, sampler, a `CLIPTextEncode` positive-prompt node, and a `SaveImage` node).
+2. Enable **dev mode** in ComfyUI settings, then click **Save (API Format)** to export the workflow as JSON.
+3. In that JSON, replace the positive prompt text with the literal token `%prompt%`. For example:
+   ```json
+   "6": {
+     "class_type": "CLIPTextEncode",
+     "inputs": { "text": "%prompt%", "clip": ["4", 1] }
+   }
+   ```
+4. In yes-chef, go to **Settings → ComfyUI**, set the **Base URL** (e.g. `http://localhost:8188`), paste the workflow JSON, optionally tweak the **prompt template** (`{meal}` is replaced with the meal name), and **Save**. Use **Test connection** to confirm the server is reachable.
+
+### Generating
+
+Open a saved meal on the **Meals** tab and click **🎨 Generate image**. The server fills `%prompt%` with the resolved prompt, queues the workflow (`POST /prompt`), polls `/history/{id}` until it finishes, downloads the first image via `/view`, and saves it as a photo on that meal.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET  | `/api/v1/agent/comfyui`      | Get the current config + status |
+| PUT  | `/api/v1/agent/comfyui`      | Save `{ base_url, workflow_json, prompt_template }` |
+| POST | `/api/v1/agent/comfyui/test` | Probe the server is reachable |
+| POST | `/api/meals/:id/generate-image` | Generate + attach an image (`{ prompt? }` to override) |
+
+See `lib/comfyui.js` for the implementation.
+
+---
+
+## AI photo analysis (disabled)
+
+> **Currently disabled in the UI.** The pluggable vision provider code (`lib/ai-provider.js`), its agent endpoints, and the `nutrition_json` / `analysis_json` database columns are all intact, so this can be re-enabled later. The AI providers can still be configured under **Settings → AI providers**. The rest of this section describes the feature as it worked / will work when re-enabled.
+
+When enabled, the Meals view shows a 🤖 button on each photo when an AI provider is configured. Click it to analyze the image and get back structured JSON:
 
 ```json
 {

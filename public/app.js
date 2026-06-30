@@ -220,48 +220,31 @@ $('#pick-variety').addEventListener('input', () => {
 // ============================================================
 //                          PLAN
 // ============================================================
-// Each group renders as a labelled section inside a day card.
-// `sub` is an optional indented slot shown beneath the parent (e.g. veg side under lunch).
+// The plan is a single work-week of lunch meal-prep: a Lunch slot plus an
+// optional Veggie side for each weekday (Mon–Fri). Breakfast & dinner are
+// intentionally left off — figured out on the fly.
 const SLOT_GROUPS = [
-  { id: 'breakfast', label: 'Breakfast' },
-  { id: 'lunch',     label: 'Lunch',   sub: { id: 'side', label: 'Veg side' } },
-  { id: 'dinner',    label: 'Dinner' },
+  { id: 'lunch', label: 'Lunch', sub: { id: 'side', label: 'Veggie side' } },
 ];
 // Flat list used for data fetching / mark-all logic.
 const SLOTS = SLOT_GROUPS.flatMap(g => g.sub ? [g.id, g.sub.id] : [g.id]);
+// Work week is Monday–Friday.
+const PLAN_DAYS = 5;
 
-// Anchor date for the plan view and current day-count preference.
+// Anchor date — any date inside the displayed week.
 let planAnchor = new Date(); planAnchor.setHours(0, 0, 0, 0);
-let planDays = parseInt(localStorage.getItem('planDays') || '7', 10);
-if (![1,2,3,5,7].includes(planDays)) planDays = 7;
 
+// Monday on/before the given date.
 function weekStart(d) {
   const s = new Date(d); s.setHours(0, 0, 0, 0);
-  s.setDate(s.getDate() - s.getDay()); // back up to Sunday
+  const back = (s.getDay() + 6) % 7;    // days since Monday (Sun→6 … Mon→0)
+  s.setDate(s.getDate() - back);
   return s;
 }
 
 function planStart() {
-  // 7-day view always starts on Sunday; other views start from the anchor itself.
-  return planDays === 7 ? weekStart(planAnchor) : new Date(planAnchor);
+  return weekStart(planAnchor);
 }
-
-function updateDaySelectorUI() {
-  $$('#plan-day-selector button').forEach(b => {
-    b.classList.toggle('active', Number(b.dataset.days) === planDays);
-  });
-}
-
-$$('#plan-day-selector button').forEach(b => {
-  b.addEventListener('click', () => {
-    planDays = Number(b.dataset.days);
-    localStorage.setItem('planDays', planDays);
-    // Snap anchor to today when switching views so you always see the present.
-    planAnchor = new Date(); planAnchor.setHours(0,0,0,0);
-    updateDaySelectorUI();
-    renderPlan();
-  });
-});
 
 function buildSlotBlock(day, slotId, label, isSub) {
   const wrap = document.createElement('div');
@@ -316,12 +299,22 @@ function buildSlotBlock(day, slotId, label, isSub) {
 let byDayRef = new Map();
 
 async function renderPlan() {
-  updateDaySelectorUI();
   const start = planStart();
-  const days = Array.from({ length: planDays }, (_, i) => {
+  const days = Array.from({ length: PLAN_DAYS }, (_, i) => {
     const d = new Date(start); d.setDate(start.getDate() + i);
     return toISO(d);
   });
+
+  // Header reflects the week being shown.
+  const titleEl = $('#plan-title');
+  if (titleEl) {
+    const startD = new Date(days[0] + 'T00:00');
+    const endD = new Date(days[days.length - 1] + 'T00:00');
+    const thisWeek = toISO(weekStart(new Date()));
+    const opts = { month: 'short', day: 'numeric' };
+    titleEl.textContent = (days[0] === thisWeek ? 'This week' : 'Week') +
+      ` · ${startD.toLocaleDateString(undefined, opts)} – ${endD.toLocaleDateString(undefined, opts)}`;
+  }
 
   await refreshMeals();
   const entries = await api(`/api/entries?from=${days[0]}&to=${days[days.length - 1]}`);
@@ -337,11 +330,11 @@ async function renderPlan() {
 
   const grid = $('#plan-grid');
   grid.innerHTML = '';
-  grid.dataset.days = planDays;
+  grid.dataset.days = PLAN_DAYS;
 
-  // Day-of-week headers — only show for the days being rendered
+  // Day-of-week headers (Mon–Fri).
   const startDow = start.getDay();
-  for (let i = 0; i < planDays; i++) {
+  for (let i = 0; i < PLAN_DAYS; i++) {
     const dh = document.createElement('div');
     dh.className = 'dow-head';
     dh.textContent = DOW_SHORT[(startDow + i) % 7];
@@ -388,8 +381,8 @@ async function renderPlan() {
   }
 }
 
-$('#plan-prev').addEventListener('click', () => { planAnchor.setDate(planAnchor.getDate() - planDays); renderPlan(); });
-$('#plan-next').addEventListener('click', () => { planAnchor.setDate(planAnchor.getDate() + planDays); renderPlan(); });
+$('#plan-prev').addEventListener('click', () => { planAnchor.setDate(planAnchor.getDate() - 7); renderPlan(); });
+$('#plan-next').addEventListener('click', () => { planAnchor.setDate(planAnchor.getDate() + 7); renderPlan(); });
 $('#plan-today').addEventListener('click', () => { planAnchor = new Date(); planAnchor.setHours(0,0,0,0); renderPlan(); });
 
 async function assignSlot(date, slot, existing = null) {
@@ -587,8 +580,9 @@ async function renderHistory() {
     for (const e of list) {
       const item = document.createElement('div');
       item.className = 'hist-entry';
-      item.title = `${e.slot}: ${e.meal?.name || '(deleted)'} — click to delete`;
-      item.innerHTML = `<span class="slot-dot" data-slot="${e.slot}"></span><span class="hist-name">${e.meal?.name || '(deleted)'}</span>`;
+      const nm = e.meal?.name || '(deleted)';
+      item.title = `${e.slot ? e.slot + ': ' : ''}${nm} — click to delete`;
+      item.innerHTML = `<span class="slot-dot" data-slot="${e.slot || ''}"></span><span class="hist-name">${escapeHtml(nm)}</span>`;
       item.addEventListener('click', async () => {
         if (!confirm('Delete this history entry?')) return;
         await api(`/api/entries/${e.id}`, { method: 'DELETE' });
@@ -607,7 +601,7 @@ $('#history-today').addEventListener('click', () => { historyAnchor = new Date()
 // Add an eaten meal directly from the History page.
 $('#history-add').addEventListener('click', () => {
   $('#history-add-date').value = todayISO();
-  $('#history-add-slot').value = 'dinner';
+  $('#history-add-slot').value = '';
   $('#history-add-status').textContent = '';
   $('#history-add-dialog').showModal();
 });
@@ -634,6 +628,82 @@ const mealForm = $('#meal-form');
 let pendingPhotos = [];
 // Currently-edited meal's photos (server-side ones).
 let currentPhotos = [];
+
+// ============================================================
+//               COMFYUI IMAGE GENERATION
+// ============================================================
+let comfyInfo = { enabled: false, base_url: '', prompt_template: '' };
+
+async function refreshComfyInfo() {
+  try {
+    const data = await api('/api/v1/agent/comfyui');
+    comfyInfo = data.info || comfyInfo;
+    return data.config || {};
+  } catch {
+    comfyInfo = { enabled: false, base_url: '', prompt_template: '' };
+    return {};
+  }
+}
+
+// Generate an image for the meal currently loaded in the form.
+$('#meal-generate-img')?.addEventListener('click', async () => {
+  const id = mealForm.id.value;
+  if (!id) return;
+  const btn = $('#meal-generate-img');
+  const status = $('#meal-photo-status');
+  btn.disabled = true;
+  status.textContent = '🎨 Generating image via ComfyUI… (this can take a while)';
+  try {
+    const added = await api(`/api/meals/${id}/generate-image`, { method: 'POST', body: {} });
+    currentPhotos.push({ id: added.id, filename: added.filename, url: added.url });
+    renderPhotoManager();
+    status.textContent = 'Image generated.';
+    refreshMeals().then(renderMealsList);
+  } catch (err) {
+    status.textContent = 'ComfyUI error: ' + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// -------- ComfyUI settings (Settings tab) --------
+async function renderComfySettings() {
+  const cfg = await refreshComfyInfo();
+  const base = $('#comfy-base-url'); if (base) base.value = cfg.base_url || '';
+  const tpl  = $('#comfy-prompt-template'); if (tpl) tpl.value = cfg.prompt_template || '';
+  const wf   = $('#comfy-workflow'); if (wf) wf.value = cfg.workflow_json || '';
+}
+
+$('#comfy-save')?.addEventListener('click', async () => {
+  const status = $('#comfy-status');
+  status.classList.remove('error');
+  status.textContent = 'Saving…';
+  try {
+    await api('/api/v1/agent/comfyui', { method: 'PUT', body: {
+      base_url:        $('#comfy-base-url').value.trim(),
+      prompt_template: $('#comfy-prompt-template').value.trim(),
+      workflow_json:   $('#comfy-workflow').value.trim(),
+    }});
+    await refreshComfyInfo();
+    status.textContent = comfyInfo.enabled ? '✓ Saved — image generation is enabled.' : '✓ Saved (add a base URL + workflow to enable generation).';
+  } catch (err) {
+    status.textContent = '✗ ' + err.message;
+    status.classList.add('error');
+  }
+});
+
+$('#comfy-test-btn')?.addEventListener('click', async () => {
+  const status = $('#comfy-status');
+  status.classList.remove('error');
+  status.textContent = 'Testing connection…';
+  try {
+    const r = await api('/api/v1/agent/comfyui/test', { method: 'POST', body: { base_url: $('#comfy-base-url').value.trim() } });
+    status.textContent = `✓ Reachable at ${r.base_url}.` + (r.has_workflow ? '' : ' (no workflow saved yet)');
+  } catch (err) {
+    status.textContent = '✗ ' + err.message;
+    status.classList.add('error');
+  }
+});
 
 // ============================================================
 //                      AI CONFIG MANAGEMENT
@@ -769,6 +839,7 @@ document.getElementById('diagnostics-refresh')?.addEventListener('click', refres
 async function renderSettings() {
   await refreshAiInfo();
   paintAiConfigsList();
+  await renderComfySettings();
   await renderTokens();
 }
 
@@ -1058,17 +1129,13 @@ function renderPhotoManager() {
   wrap.innerHTML = '';
   for (const p of currentPhotos) {
     const tile = document.createElement('div');
-    tile.className = 'photo-tile' + (p.analysis ? ' analyzed' : '');
-    const aiBtn = aiInfo.enabled ? '<button type="button" class="photo-ai" title="Analyze with AI">🤖</button>' : '';
-    const badge = p.analysis ? '<span class="photo-analyzed">AI</span>' : '';
+    tile.className = 'photo-tile';
     tile.innerHTML = `
       <img src="${p.url}" alt="" />
       <div class="photo-broken" hidden>
         <div class="photo-broken-icon">⚠</div>
         <div class="photo-broken-text">Image failed to load</div>
       </div>
-      ${badge}
-      ${aiBtn}
       <button type="button" class="photo-del" title="Remove">✕</button>`;
     const img = tile.querySelector('img');
     img.addEventListener('error', () => {
@@ -1086,16 +1153,7 @@ function renderPhotoManager() {
         refreshMeals().then(renderMealsList);
       });
     });
-    if (aiBtn) {
-      tile.querySelector('.photo-ai').addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        analyzePhoto(p);
-      });
-    }
-    img.addEventListener('click', () => {
-      if (p.analysis) showAnalysisDialog(p);
-      else openLightbox(p.url, p);
-    });
+    img.addEventListener('click', () => openLightbox(p.url, p));
     wrap.appendChild(tile);
   }
   for (const pp of pendingPhotos) {
@@ -1258,43 +1316,19 @@ function fillForm(meal) {
   mealForm.notes.value = meal?.notes || '';
   mealForm.tags.value  = (meal?.tags || []).map(t => t.name).join(', ');
   $('#meal-form-title').textContent = meal ? `Edit: ${meal.name}` : 'Add a meal';
-  // Nutrition fields.
-  const n = meal?.nutrition || {};
-  mealForm.n_calories.value = n.calories ?? '';
-  mealForm.n_protein.value  = n.protein_g ?? '';
-  mealForm.n_carbs.value    = n.carbs_g ?? '';
-  mealForm.n_fat.value      = n.fat_g ?? '';
-  mealForm.n_fiber.value    = n.fiber_g ?? '';
-  mealForm.n_sodium.value   = n.sodium_mg ?? '';
-  $('#nutrition-summary').textContent = n.calories != null ? `· ${n.calories} kcal` : '';
   currentPhotos = (meal?.photos || []).slice();
   pendingPhotos = [];
   $('#meal-photo-status').textContent = '';
   renderPhotoManager();
+  // The "Generate image" button only applies to an already-saved meal and
+  // only when ComfyUI is configured.
+  const genBtn = $('#meal-generate-img');
+  if (genBtn) genBtn.hidden = !(meal?.id && comfyInfo.enabled);
   mealForm.name.focus();
   mealForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 $('#meal-form-reset').addEventListener('click', () => fillForm(null));
-
-function readNutritionFromForm() {
-  const get = (n) => {
-    const v = mealForm[n].value;
-    if (v === '' || v == null) return null;
-    const num = Number(v);
-    return Number.isFinite(num) ? num : null;
-  };
-  const out = {
-    calories:  get('n_calories'),
-    protein_g: get('n_protein'),
-    carbs_g:   get('n_carbs'),
-    fat_g:     get('n_fat'),
-    fiber_g:   get('n_fiber'),
-    sodium_mg: get('n_sodium'),
-  };
-  // Return null if every field is empty so we don't store noise.
-  return Object.values(out).every(v => v == null) ? null : out;
-}
 
 mealForm.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -1303,7 +1337,6 @@ mealForm.addEventListener('submit', async (e) => {
     name:  mealForm.name.value.trim(),
     notes: mealForm.notes.value.trim(),
     tags:  mealForm.tags.value.split(',').map(s => s.trim()).filter(Boolean),
-    nutrition: readNutritionFromForm(),
   };
   try {
     let saved;
@@ -1363,12 +1396,10 @@ function renderMealsList() {
     const cover = (m.photos && m.photos[0]) ? m.photos[0].url : '';
     const tagStr = m.tags.map(t => `<span class="chip">${escapeHtml(t.name)}</span>`).join(' ');
     const count = (m.photos || []).length;
-    const kcal = m.nutrition?.calories;
     tile.innerHTML = `
       <div class="tile-cover" ${cover ? `style="background-image:url('${cover}')"` : ''}>
         ${cover ? '' : '<span class="tile-placeholder">🍽️</span>'}
         ${count > 1 ? `<span class="tile-count">📷 ${count}</span>` : ''}
-        ${kcal != null ? `<span class="tile-kcal">${kcal} kcal</span>` : ''}
         <button class="tile-del danger" title="Delete meal" data-act="del">✕</button>
       </div>
       <div class="tile-body">
@@ -1531,35 +1562,55 @@ async function renderHome() {
     weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
   });
 
-  // Today + upcoming planned entries
   const today = todayISO();
-  const forward = isoDateOffset(today, 7);
-  let entries = [];
-  try { entries = await api(`/api/entries?from=${today}&to=${forward}`); } catch { entries = []; }
-  const todayEntries = entries.filter(e => e.on_date === today);
-  const upcoming = entries.filter(e => e.on_date > today).slice(0, 6);
 
-  // ----- Today card -----
+  // ----- This week's lunches card -----
+  // Show this work-week's planned lunches (Mon–Fri), each with its veggie side.
+  const mon = weekStart(new Date());
+  const weekDays = Array.from({ length: 5 }, (_, i) => {
+    const d = new Date(mon); d.setDate(mon.getDate() + i); return toISO(d);
+  });
+  let weekEntries = [];
+  try { weekEntries = await api(`/api/entries?from=${weekDays[0]}&to=${weekDays[4]}`); } catch { weekEntries = []; }
+  const lunchByDay = new Map();
+  for (const e of weekEntries) {
+    if (e.slot !== 'lunch' && e.slot !== 'side') continue;
+    if (!lunchByDay.has(e.on_date)) lunchByDay.set(e.on_date, {});
+    lunchByDay.get(e.on_date)[e.slot] = e;
+  }
+
   const todayWrap = $('#home-today-slots');
   todayWrap.innerHTML = '';
-  if (!todayEntries.length) {
-    todayWrap.innerHTML = `<p class="muted">Nothing planned for today. <a href="#pick" data-tab="pick">Pick something now</a> or <a href="#plan" data-tab="plan">open the plan</a>.</p>`;
+  const plannedDays = weekDays.filter(d => lunchByDay.get(d)?.lunch);
+  if (!plannedDays.length) {
+    todayWrap.innerHTML = `<p class="muted">No lunches planned this week. <a href="#plan" data-tab="plan">Open the plan</a> or <button class="link-btn" id="home-week-fill">auto-fill the week →</button></p>`;
+    $('#home-week-fill')?.addEventListener('click', () => openSuggestDialog());
   } else {
-    for (const e of todayEntries) {
+    for (const d of weekDays) {
+      const lunch = lunchByDay.get(d)?.lunch;
+      if (!lunch) continue;
+      const side = lunchByDay.get(d)?.side;
+      const dow = DOW_SHORT[new Date(d + 'T00:00').getDay()];
+      const sideStr = side ? ` <span class="muted">+ ${escapeHtml(side.meal?.name || '')}</span>` : '';
       const row = document.createElement('div');
-      row.className = 'home-slot' + (e.status === 'eaten' ? ' eaten' : '');
+      row.className = 'home-slot' + (lunch.status === 'eaten' ? ' eaten' : '') + (d === today ? ' today' : '');
       row.innerHTML = `
-        <span class="home-slot-label">${escapeHtml(e.slot)}</span>
-        <span class="home-slot-name">${escapeHtml(e.meal?.name || '(deleted meal)')}</span>
-        ${e.status === 'eaten' ? '<span class="home-slot-tag">✓ eaten</span>' : '<button class="ctrl home-eat" title="Mark eaten">🍽️</button>'}`;
+        <span class="home-slot-label">${dow}</span>
+        <span class="home-slot-name">${escapeHtml(lunch.meal?.name || '(deleted meal)')}${sideStr}</span>
+        ${lunch.status === 'eaten' ? '<span class="home-slot-tag">✓ eaten</span>' : '<button class="ctrl home-eat" title="Mark eaten">🍽️</button>'}`;
       const eatBtn = row.querySelector('.home-eat');
       if (eatBtn) eatBtn.addEventListener('click', async () => {
-        await api(`/api/entries/${e.id}`, { method: 'PATCH', body: { status: 'eaten' } });
+        await api(`/api/entries/${lunch.id}`, { method: 'PATCH', body: { status: 'eaten' } });
         renderHome();
       });
       todayWrap.appendChild(row);
     }
   }
+
+  // Upcoming planned entries (any slot) over the next ~10 days.
+  let entries = [];
+  try { entries = await api(`/api/entries?from=${today}&to=${isoDateOffset(today, 10)}&status=planned`); } catch { entries = []; }
+  const upcoming = entries.filter(e => e.on_date >= today).slice(0, 6);
 
   // ----- Stats card -----
   try {
@@ -1632,11 +1683,9 @@ async function renderPhotos() {
 }
 function paintPhotosGrid() {
   const q = ($('#photos-search').value || '').toLowerCase();
-  const onlyAnalyzed = $('#photos-only-analyzed').checked;
   const all = state.meals.flatMap(m => (m.photos || []).map(p => ({ ...p, meal: m })));
   const filtered = all.filter(p => {
     if (q && !p.meal.name.toLowerCase().includes(q)) return false;
-    if (onlyAnalyzed && !p.analysis) return false;
     return true;
   });
   filtered.sort((a, b) => b.id - a.id);
@@ -1649,13 +1698,9 @@ function paintPhotosGrid() {
   }
   for (const p of filtered) {
     const tile = document.createElement('div');
-    tile.className = 'photos-tile' + (p.analysis ? ' analyzed' : '');
-    const kcal = p.meal.nutrition?.calories;
+    tile.className = 'photos-tile';
     tile.innerHTML = `
-      <div class="photos-cover" style="background-image:url('${p.url}')">
-        ${p.analysis ? '<span class="photo-analyzed">AI</span>' : ''}
-        ${kcal != null ? `<span class="tile-kcal">${kcal} kcal</span>` : ''}
-      </div>
+      <div class="photos-cover" style="background-image:url('${p.url}')"></div>
       <div class="photos-caption">
         <div class="photos-name">${escapeHtml(p.meal.name)}</div>
         ${p.meal.tags?.length ? `<div class="muted" style="font-size:.75rem">${escapeHtml(p.meal.tags.map(t => t.name).join(' · '))}</div>` : ''}
@@ -1668,7 +1713,6 @@ function paintPhotosGrid() {
   }
 }
 $('#photos-search').addEventListener('input', paintPhotosGrid);
-$('#photos-only-analyzed').addEventListener('change', paintPhotosGrid);
 
 // ============================================================
 //                     SUGGEST (auto-fill) DIALOG
@@ -1928,7 +1972,7 @@ async function refreshNotesBanner() {
 
 // ----------------------- boot -----------------------
 (async () => {
-  await refreshAiInfo();
+  await refreshComfyInfo();
   await refreshNotesBanner();
   // Poll for new notes every 5 minutes so external agents can push reminders.
   setInterval(refreshNotesBanner, 5 * 60 * 1000);
