@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New `mcp/` package: a stdio [Model Context Protocol](https://modelcontextprotocol.io) server that wraps the agent API as tools, so you can drive yes-chef conversationally — *"log that I had a burrito for lunch"*, *"suggest next week's lunches"*, *"generate an image for the salmon bowl"*. Configured with `YESCHEF_BASE_URL` + an agent token; see `mcp/README.md`.
 - Tools: `list_meals`, `get_state`, `get_stats`, `get_recommendations`, `suggest_week`, `create_meal`, `log_meal`, `push_note`, `generate_meal_image`.
 
+### Added — ComfyUI example workflows + random seed
+
+- Ready-to-paste example workflows in `comfy-workflows/` (`txt2img.json`, `img2img.json`) using stock nodes and the default SD 1.5 checkpoint — set `ckpt_name` and go.
+- New optional **`%seed%`** placeholder: put it unquoted as the KSampler seed and yes-chef substitutes a fresh random integer each run, so repeated generations vary instead of returning the same (ComfyUI-cached) image.
+
 ### Added — Bearer-accessible write endpoints
 
 - `POST /api/v1/agent/entries` — log (eaten) or plan a meal `{ meal_id, on_date?, slot?, status? }` with a token. This is the bearer-friendly path for budget-import scripts; previously entry writes required a browser session. `slot` optional, `on_date` defaults to today, `status` defaults to `eaten`.

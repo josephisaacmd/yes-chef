@@ -282,9 +282,10 @@
         <p class="muted" style="margin:.25rem 0 .75rem">
           Generate a dish image for any meal using your own
           <a href="https://github.com/comfyanonymous/ComfyUI" target="_blank" rel="noopener">ComfyUI</a>
-          server. Paste workflows exported with <strong>Save (API Format)</strong>. Put the literal token
-          <code>%prompt%</code> in the positive-prompt node. For image-to-image, also put
-          <code>%image%</code> in the <code>LoadImage</code> node's filename so a meal photo can be used as the base.
+          server. Paste workflows exported with <strong>Save (API Format)</strong> — or start from the examples in
+          <code>comfy-workflows/</code>. Put the literal token <code>%prompt%</code> in the positive-prompt node;
+          for image-to-image, also put <code>%image%</code> in the <code>LoadImage</code> node's filename. Optionally
+          add <code>%seed%</code> (unquoted) as the KSampler seed for a fresh random image each run.
         </p>
         <label>
           Base URL

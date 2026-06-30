@@ -410,19 +410,24 @@ Generate a dish image for any meal using your own self-hosted [ComfyUI](https://
 - **Text-to-image** — generate a fresh stylized image from the meal name / prompt.
 - **Image-to-image** — take an existing meal photo and transform it into a stylized version (the photo is uploaded into ComfyUI and fed to a `LoadImage` node).
 
-### Exporting a workflow
+### Quick start: ready-made workflows
 
-For each pipeline, build the workflow in ComfyUI, enable **dev mode** in settings, then click **Save (API Format)** to export it as JSON. Then add placeholders:
+Copy-paste examples live in [`comfy-workflows/`](comfy-workflows/) — [`txt2img.json`](comfy-workflows/txt2img.json) and [`img2img.json`](comfy-workflows/img2img.json). They use stock ComfyUI nodes and the default SD 1.5 checkpoint. The **only** field you must change is `ckpt_name` (set it to a checkpoint you actually have). For SDXL, also bump the latent size from `512` to `1024`.
 
-- **`%prompt%`** (both pipelines) — goes in the positive-prompt node's text:
+### Placeholders
+
+If you'd rather export your own workflow: build it in ComfyUI, enable **dev mode** in settings, click **Save (API Format)**, then add these tokens:
+
+- **`%prompt%`** (both pipelines) — in the positive-prompt node's text:
   ```json
   "6": { "class_type": "CLIPTextEncode", "inputs": { "text": "%prompt%", "clip": ["4", 1] } }
   ```
-- **`%image%`** (image-to-image only) — goes in the `LoadImage` node's filename. yes-chef uploads the meal photo to ComfyUI and substitutes its name here:
+- **`%image%`** (image-to-image only) — in the `LoadImage` node's filename. yes-chef uploads the meal photo to ComfyUI and substitutes its name here:
   ```json
   "10": { "class_type": "LoadImage", "inputs": { "image": "%image%", "upload": "image" } }
   ```
-  (Pair this with a `VAEEncode` → `KSampler` `latent_image` path and a `denoise` below ~0.7 so the original food stays recognizable.)
+  Pair this with a `VAEEncode` → `KSampler` `latent_image` path and a `denoise` below ~0.7 so the original food stays recognizable (the examples use `0.55`).
+- **`%seed%`** (optional, both pipelines) — put it **unquoted** as the KSampler seed (`"seed": %seed%`). yes-chef fills it with a fresh random integer each run, so repeated generations vary instead of returning the same (ComfyUI-cached) image.
 
 Every workflow needs a `SaveImage` node so there's an output to download.
 
