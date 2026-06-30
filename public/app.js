@@ -646,32 +646,40 @@ async function refreshComfyInfo() {
 }
 
 // Generate an image for the meal currently loaded in the form.
-$('#meal-generate-img')?.addEventListener('click', async () => {
+$('#meal-generate-img')?.addEventListener('click', () => runGenerate({ mode: 'txt2img' }));
+
+// Transform an existing photo into a stylized image (img2img).
+async function stylizePhoto(photoId) {
+  return runGenerate({ mode: 'img2img', photo_id: photoId });
+}
+
+async function runGenerate(body) {
   const id = mealForm.id.value;
   if (!id) return;
   const btn = $('#meal-generate-img');
   const status = $('#meal-photo-status');
-  btn.disabled = true;
-  status.textContent = '🎨 Generating image via ComfyUI… (this can take a while)';
+  if (btn) btn.disabled = true;
+  status.textContent = (body.mode === 'img2img' ? '✨ Transforming photo via ComfyUI…' : '🎨 Generating image via ComfyUI…') + ' (this can take a while)';
   try {
-    const added = await api(`/api/meals/${id}/generate-image`, { method: 'POST', body: {} });
+    const added = await api(`/api/meals/${id}/generate-image`, { method: 'POST', body });
     currentPhotos.push({ id: added.id, filename: added.filename, url: added.url });
     renderPhotoManager();
-    status.textContent = 'Image generated.';
+    status.textContent = 'Done — new image added.';
     refreshMeals().then(renderMealsList);
   } catch (err) {
     status.textContent = 'ComfyUI error: ' + err.message;
   } finally {
-    btn.disabled = false;
+    if (btn) btn.disabled = false;
   }
-});
+}
 
 // -------- ComfyUI settings (Settings tab) --------
 async function renderComfySettings() {
   const cfg = await refreshComfyInfo();
   const base = $('#comfy-base-url'); if (base) base.value = cfg.base_url || '';
   const tpl  = $('#comfy-prompt-template'); if (tpl) tpl.value = cfg.prompt_template || '';
-  const wf   = $('#comfy-workflow'); if (wf) wf.value = cfg.workflow_json || '';
+  const t2i  = $('#comfy-workflow-txt2img'); if (t2i) t2i.value = cfg.workflow_txt2img || '';
+  const i2i  = $('#comfy-workflow-img2img'); if (i2i) i2i.value = cfg.workflow_img2img || '';
 }
 
 $('#comfy-save')?.addEventListener('click', async () => {
@@ -680,12 +688,18 @@ $('#comfy-save')?.addEventListener('click', async () => {
   status.textContent = 'Saving…';
   try {
     await api('/api/v1/agent/comfyui', { method: 'PUT', body: {
-      base_url:        $('#comfy-base-url').value.trim(),
-      prompt_template: $('#comfy-prompt-template').value.trim(),
-      workflow_json:   $('#comfy-workflow').value.trim(),
+      base_url:         $('#comfy-base-url').value.trim(),
+      prompt_template:  $('#comfy-prompt-template').value.trim(),
+      workflow_txt2img: $('#comfy-workflow-txt2img').value.trim(),
+      workflow_img2img: $('#comfy-workflow-img2img').value.trim(),
     }});
     await refreshComfyInfo();
-    status.textContent = comfyInfo.enabled ? '✓ Saved — image generation is enabled.' : '✓ Saved (add a base URL + workflow to enable generation).';
+    const parts = [];
+    if (comfyInfo.enabled) parts.push('text-to-image');
+    if (comfyInfo.img2img) parts.push('image-to-image');
+    status.textContent = parts.length
+      ? `✓ Saved — enabled: ${parts.join(' + ')}.`
+      : '✓ Saved (add a base URL + a text-to-image workflow to enable generation).';
   } catch (err) {
     status.textContent = '✗ ' + err.message;
     status.classList.add('error');
@@ -1127,15 +1141,18 @@ function armDelete(tile, doDelete) {
 function renderPhotoManager() {
   const wrap = $('#meal-photos');
   wrap.innerHTML = '';
+  const canStylize = comfyInfo.img2img && !!mealForm.id.value;
   for (const p of currentPhotos) {
     const tile = document.createElement('div');
     tile.className = 'photo-tile';
+    const styBtn = canStylize ? '<button type="button" class="photo-stylize" title="Transform into a stylized image (ComfyUI img2img)">✨</button>' : '';
     tile.innerHTML = `
       <img src="${p.url}" alt="" />
       <div class="photo-broken" hidden>
         <div class="photo-broken-icon">⚠</div>
         <div class="photo-broken-text">Image failed to load</div>
       </div>
+      ${styBtn}
       <button type="button" class="photo-del" title="Remove">✕</button>`;
     const img = tile.querySelector('img');
     img.addEventListener('error', () => {
@@ -1153,6 +1170,12 @@ function renderPhotoManager() {
         refreshMeals().then(renderMealsList);
       });
     });
+    if (styBtn) {
+      tile.querySelector('.photo-stylize').addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        stylizePhoto(p.id);
+      });
+    }
     img.addEventListener('click', () => openLightbox(p.url, p));
     wrap.appendChild(tile);
   }

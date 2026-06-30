@@ -282,9 +282,9 @@
         <p class="muted" style="margin:.25rem 0 .75rem">
           Generate a dish image for any meal using your own
           <a href="https://github.com/comfyanonymous/ComfyUI" target="_blank" rel="noopener">ComfyUI</a>
-          server. Paste a workflow exported with <strong>Save (API Format)</strong> and put the literal token
-          <code>%prompt%</code> wherever the positive text prompt belongs. Then use
-          <strong>🎨 Generate image</strong> on the Meals tab.
+          server. Paste workflows exported with <strong>Save (API Format)</strong>. Put the literal token
+          <code>%prompt%</code> in the positive-prompt node. For image-to-image, also put
+          <code>%image%</code> in the <code>LoadImage</code> node's filename so a meal photo can be used as the base.
         </p>
         <label>
           Base URL
@@ -295,8 +295,12 @@
           <input type="text" id="comfy-prompt-template" placeholder="professional food photography of {meal}, plated, natural light, appetizing" />
         </label>
         <label>
-          Workflow JSON (API format) <span class="muted" style="font-weight:400">— must contain <code>%prompt%</code></span>
-          <textarea id="comfy-workflow" rows="8" spellcheck="false" placeholder='{ "3": { "class_type": "KSampler", ... }, "6": { "class_type": "CLIPTextEncode", "inputs": { "text": "%prompt%", ... } }, ... }'></textarea>
+          Text-to-image workflow (API format) <span class="muted" style="font-weight:400">— must contain <code>%prompt%</code></span>
+          <textarea id="comfy-workflow-txt2img" rows="7" spellcheck="false" placeholder='{ "3": { "class_type": "KSampler", ... }, "6": { "class_type": "CLIPTextEncode", "inputs": { "text": "%prompt%", ... } }, "9": { "class_type": "SaveImage", ... } }'></textarea>
+        </label>
+        <label>
+          Image-to-image workflow (API format) <span class="muted" style="font-weight:400">— optional; must contain <code>%prompt%</code> and <code>%image%</code></span>
+          <textarea id="comfy-workflow-img2img" rows="7" spellcheck="false" placeholder='{ "10": { "class_type": "LoadImage", "inputs": { "image": "%image%", "upload": "image" } }, "6": { "class_type": "CLIPTextEncode", "inputs": { "text": "%prompt%", ... } }, ... }'></textarea>
         </label>
         <div class="row">
           <button type="button" id="comfy-save" class="primary">Save</button>

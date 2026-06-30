@@ -20,13 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Entry **slots are now optional**. You can log any number of meals on a day with no required breakfast/lunch/dinner slot — `slot` accepts `""` (no slot) in addition to the known labels. This makes it easy to pipe eating-out purchases from a budget feed (via the agent API / `POST /api/entries`) alongside manually-logged home-cooked meals.
 - The History "+ Add meal" dialog defaults to no slot and notes that you can log as many meals per day as you like.
 
-### Added — ComfyUI image generation
+### Added — ComfyUI image generation (text-to-image + image-to-image)
 
-- Generate a dish image for any meal using your own self-hosted ComfyUI server. New **Settings → ComfyUI** card (base URL, prompt template, workflow JSON with a `%prompt%` placeholder) and a **🎨 Generate image** button on the Meals tab.
-- New `lib/comfyui.js` client (queue `/prompt` → poll `/history` → download `/view`) and endpoints:
+- Generate a dish image for any meal using your own self-hosted ComfyUI server. New **Settings → ComfyUI** card (base URL, prompt template, and two workflow fields).
+  - **Text-to-image** — `%prompt%` placeholder; triggered by **🎨 Generate image** on the Meals tab.
+  - **Image-to-image** — `%prompt%` + `%image%` placeholders; the **✨** button on a meal photo uploads that photo to ComfyUI (`POST /upload/image`) and feeds it to a `LoadImage` node, transforming it into a stylized version. The original photo is kept; the result is added as a new photo.
+- New `lib/comfyui.js` client (optionally upload base image → queue `/prompt` → poll `/history` → download `/view`) and endpoints:
   - `GET/PUT /api/v1/agent/comfyui`, `POST /api/v1/agent/comfyui/test`
-  - `POST /api/meals/:id/generate-image`
-- Config is stored in a new `app_settings` key/value table and can be seeded from `COMFYUI_BASE_URL` / `COMFYUI_WORKFLOW_JSON` / `COMFYUI_PROMPT_TEMPLATE`.
+  - `POST /api/meals/:id/generate-image` — body `{ prompt?, mode?: 'txt2img'|'img2img', photo_id? }`
+- Config is stored in a new `app_settings` key/value table and can be seeded from `COMFYUI_BASE_URL` / `COMFYUI_WORKFLOW_JSON` (text-to-image) / `COMFYUI_PROMPT_TEMPLATE`.
 
 ### Changed — AI photo analysis & nutrition hidden
 

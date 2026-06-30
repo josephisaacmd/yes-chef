@@ -15,7 +15,7 @@ Repository: <https://github.com/josephisaac91/web-menu> · See [CHANGELOG.md](CH
 - **✨ Try something new** — surfaces meals you've never eaten first, then the longest-ago ones
 - **📋 Top-N recommendations** — preview the 5 best picks ranked by the algorithm
 - **📜 Flexible history** — log anything you ate on a given day; any number of entries per day, with an *optional* slot label (great for piping in eating-out purchases from a budget feed via the agent API, plus manual home-cooked entries). Monthly calendar + stats panel (variety index, streak, top meals, breakdowns).
-- **🎨 ComfyUI image generation** — generate a dish image for any meal using your own self-hosted [ComfyUI](https://github.com/comfyanonymous/ComfyUI) server and save it as the meal's photo
+- **🎨 ComfyUI image generation** — generate a dish image for any meal using your own self-hosted [ComfyUI](https://github.com/comfyanonymous/ComfyUI) server: **text-to-image** from the meal name, or **image-to-image** that transforms one of the meal's photos into a stylized version
 - **🤖 Agent API** — Bearer-token gated endpoints under `/api/v1/agent/*` for autonomous AI agents (reminders, recommendations, state snapshots)
 - **🏷️ Tags** — free-form metadata per meal; manage / rename / delete from the Meals tab
 - **📥 CSV import** — bulk-import a food log; idempotent
@@ -185,7 +185,7 @@ The compose file binds only to `127.0.0.1:3000` so the app is not directly reach
 | `ALLOWED_EMAILS` | | _(all)_ | Comma-separated Gmail addresses allowed to sign in via Google |
 | `PUBLIC_BASE_URL` | | _(disabled)_ | Your public URL, e.g. `https://menu.yourdomain.com` — required for OAuth redirect |
 | `COMFYUI_BASE_URL` | | _(disabled)_ | ComfyUI server URL for image generation, e.g. `http://localhost:8188`. Manageable from Settings → ComfyUI after first boot |
-| `COMFYUI_WORKFLOW_JSON` | | _(blank)_ | ComfyUI workflow (API format) seed, containing the `%prompt%` placeholder. Usually easier to paste in the Settings UI |
+| `COMFYUI_WORKFLOW_JSON` | | _(blank)_ | Seeds the **text-to-image** workflow (API format) with the `%prompt%` placeholder. The image-to-image workflow is set from the Settings UI. Usually easier to paste both there |
 | `COMFYUI_PROMPT_TEMPLATE` | | _(built-in)_ | Prompt template; `{meal}` is replaced with the meal name |
 
 Generate a good `SESSION_SECRET`:
@@ -392,31 +392,51 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 ## ComfyUI image generation
 
-Generate a dish image for any meal using your own self-hosted [ComfyUI](https://github.com/comfyanonymous/ComfyUI) server.
+Generate a dish image for any meal using your own self-hosted [ComfyUI](https://github.com/comfyanonymous/ComfyUI) server. Two pipelines are supported:
 
-### Setup
+- **Text-to-image** — generate a fresh stylized image from the meal name / prompt.
+- **Image-to-image** — take an existing meal photo and transform it into a stylized version (the photo is uploaded into ComfyUI and fed to a `LoadImage` node).
 
-1. In ComfyUI, build the workflow you want (model, sampler, a `CLIPTextEncode` positive-prompt node, and a `SaveImage` node).
-2. Enable **dev mode** in ComfyUI settings, then click **Save (API Format)** to export the workflow as JSON.
-3. In that JSON, replace the positive prompt text with the literal token `%prompt%`. For example:
-   ```json
-   "6": {
-     "class_type": "CLIPTextEncode",
-     "inputs": { "text": "%prompt%", "clip": ["4", 1] }
-   }
-   ```
-4. In yes-chef, go to **Settings → ComfyUI**, set the **Base URL** (e.g. `http://localhost:8188`), paste the workflow JSON, optionally tweak the **prompt template** (`{meal}` is replaced with the meal name), and **Save**. Use **Test connection** to confirm the server is reachable.
+### Exporting a workflow
+
+For each pipeline, build the workflow in ComfyUI, enable **dev mode** in settings, then click **Save (API Format)** to export it as JSON. Then add placeholders:
+
+- **`%prompt%`** (both pipelines) — goes in the positive-prompt node's text:
+  ```json
+  "6": { "class_type": "CLIPTextEncode", "inputs": { "text": "%prompt%", "clip": ["4", 1] } }
+  ```
+- **`%image%`** (image-to-image only) — goes in the `LoadImage` node's filename. yes-chef uploads the meal photo to ComfyUI and substitutes its name here:
+  ```json
+  "10": { "class_type": "LoadImage", "inputs": { "image": "%image%", "upload": "image" } }
+  ```
+  (Pair this with a `VAEEncode` → `KSampler` `latent_image` path and a `denoise` below ~0.7 so the original food stays recognizable.)
+
+Every workflow needs a `SaveImage` node so there's an output to download.
+
+### Configuring
+
+In yes-chef, go to **Settings → ComfyUI**:
+1. Set the **Base URL** (e.g. `http://localhost:8188` — for a Docker host, the address ComfyUI is reachable at from the yes-chef container).
+2. Optionally tweak the **prompt template** (`{meal}` is replaced with the meal name).
+3. Paste the **Text-to-image** workflow, and optionally the **Image-to-image** workflow.
+4. **Save**, then **Test connection** to confirm the server is reachable.
+
+Image-to-image is optional — if you leave that workflow blank, only text-to-image is enabled.
 
 ### Generating
 
-Open a saved meal on the **Meals** tab and click **🎨 Generate image**. The server fills `%prompt%` with the resolved prompt, queues the workflow (`POST /prompt`), polls `/history/{id}` until it finishes, downloads the first image via `/view`, and saves it as a photo on that meal.
+On the **Meals** tab, open a saved meal:
+- **🎨 Generate image** runs text-to-image.
+- The **✨** button on each photo runs image-to-image using that photo as the base.
+
+Either way the server fills the placeholders, queues the workflow (`POST /prompt`), polls `/history/{id}` until it finishes, downloads the first image via `/view`, and saves it as a **new** photo on that meal (the base photo is kept).
 
 | Method | Path | Purpose |
 |---|---|---|
 | GET  | `/api/v1/agent/comfyui`      | Get the current config + status |
-| PUT  | `/api/v1/agent/comfyui`      | Save `{ base_url, workflow_json, prompt_template }` |
+| PUT  | `/api/v1/agent/comfyui`      | Save `{ base_url, prompt_template, workflow_txt2img, workflow_img2img }` |
 | POST | `/api/v1/agent/comfyui/test` | Probe the server is reachable |
-| POST | `/api/meals/:id/generate-image` | Generate + attach an image (`{ prompt? }` to override) |
+| POST | `/api/meals/:id/generate-image` | Generate + attach an image. Body: `{ prompt?, mode?: 'txt2img'\|'img2img', photo_id? }` |
 
 See `lib/comfyui.js` for the implementation.
 

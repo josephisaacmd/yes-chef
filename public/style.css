@@ -419,6 +419,13 @@ dialog::backdrop { background: rgba(0,0,0,.4); }
   font-size: .8rem; padding: 0; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
 }
+.photo-tile .photo-stylize {
+  position: absolute; bottom: 2px; right: 2px;
+  background: rgba(0,0,0,.6); color: #fff; border: none;
+  width: 1.4rem; height: 1.4rem; border-radius: 50%;
+  font-size: .8rem; padding: 0; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
 .photo-tile .photo-analyzed {
   position: absolute; top: 2px; left: 2px;
   background: var(--good); color: #fff;

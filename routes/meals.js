@@ -24,6 +24,14 @@ const MIME_EXT = {
 };
 const MAX_PHOTO_BYTES = 15 * 1024 * 1024; // 15 MB
 
+function mimeFromName(name) {
+  const ext = (name.split('.').pop() || '').toLowerCase();
+  return {
+    jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
+    webp: 'image/webp', gif: 'image/gif', heic: 'image/heic', heif: 'image/heif',
+  }[ext] || 'application/octet-stream';
+}
+
 // Writes image bytes to the photo dir, verifies the write, and inserts a
 // meal_photos row. Returns { id, filename, url }. Throws on disk failure.
 function saveMealPhoto(mealId, buf, ext) {
@@ -223,23 +231,43 @@ router.post('/:id/photos', (req, res) => {
   res.status(201).json(saved);
 });
 
-// POST /api/meals/:id/generate-image  { prompt? }
+// POST /api/meals/:id/generate-image  { prompt?, mode?, photo_id? }
 // Generates a dish image via the configured ComfyUI server and saves it as a
-// meal photo. If `prompt` is omitted, one is built from the meal name + the
-// configured prompt template.
+// new meal photo. If `prompt` is omitted, one is built from the meal name +
+// the configured prompt template.
+//   mode = 'txt2img' (default) | 'img2img'
+//   For img2img, an existing photo is used as the base — `photo_id` selects
+//   which one, otherwise the meal's first photo is used.
 router.post('/:id/generate-image', async (req, res) => {
   const meal = db.prepare('SELECT id, name FROM meals WHERE id = ?').get(req.params.id);
   if (!meal) return res.status(404).json({ error: 'meal not found' });
-  if (!comfy.isEnabled()) {
-    return res.status(503).json({ error: 'ComfyUI is not configured. Set the base URL and workflow in Settings.', info: comfy.info() });
+
+  const mode = req.body?.mode === 'img2img' ? 'img2img' : 'txt2img';
+  if (mode === 'txt2img' && !comfy.isEnabled()) {
+    return res.status(503).json({ error: 'ComfyUI is not configured. Set the base URL and a text-to-image workflow in Settings.', info: comfy.info() });
+  }
+  if (mode === 'img2img' && !comfy.hasImg2Img()) {
+    return res.status(503).json({ error: 'No image-to-image workflow is configured. Add one in Settings.', info: comfy.info() });
+  }
+
+  // For img2img, load the base photo bytes from disk.
+  let inputImage = null;
+  if (mode === 'img2img') {
+    const photoRow = req.body?.photo_id
+      ? db.prepare('SELECT id, filename FROM meal_photos WHERE id = ? AND meal_id = ?').get(req.body.photo_id, meal.id)
+      : db.prepare('SELECT id, filename FROM meal_photos WHERE meal_id = ? ORDER BY sort_order ASC, id ASC LIMIT 1').get(meal.id);
+    if (!photoRow) return res.status(400).json({ error: 'no base photo to transform — add a photo to this meal first' });
+    const basePath = path.join(PHOTO_DIR, photoRow.filename);
+    if (!fs.existsSync(basePath)) return res.status(404).json({ error: 'base photo file missing on disk' });
+    inputImage = { buffer: fs.readFileSync(basePath), mime: mimeFromName(photoRow.filename), filename: photoRow.filename };
   }
 
   const prompt = (req.body?.prompt && String(req.body.prompt).trim()) || comfy.buildPrompt(meal.name);
   let result;
   try {
-    result = await comfy.generateImage({ prompt });
+    result = await comfy.generateImage({ prompt, mode, inputImage });
   } catch (err) {
-    console.error('[comfyui] generate failed for meal', meal.id, '—', err.message);
+    console.error('[comfyui] generate failed for meal', meal.id, `(${mode})`, '—', err.message);
     return res.status(502).json({ error: 'image generation failed', detail: err.message });
   }
 

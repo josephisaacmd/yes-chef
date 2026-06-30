@@ -260,10 +260,13 @@ router.get('/comfyui', (_req, res) => {
 
 router.put('/comfyui', (req, res) => {
   const b = req.body || {};
+  const str = (v) => (typeof v === 'string' ? v.trim() : '');
   const cfg = {
-    base_url:        typeof b.base_url === 'string' ? b.base_url.trim() : '',
-    workflow_json:   typeof b.workflow_json === 'string' ? b.workflow_json.trim() : '',
-    prompt_template: typeof b.prompt_template === 'string' ? b.prompt_template.trim() : '',
+    base_url:         str(b.base_url),
+    prompt_template:  str(b.prompt_template),
+    // Accept the new split fields; fall back to the legacy single field.
+    workflow_txt2img: str(b.workflow_txt2img) || str(b.workflow_json),
+    workflow_img2img: str(b.workflow_img2img),
   };
   setSetting('comfyui', cfg);
   res.json({ config: comfy.getConfig(), info: comfy.info() });
