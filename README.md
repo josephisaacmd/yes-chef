@@ -412,7 +412,10 @@ Generate a dish image for any meal using your own self-hosted [ComfyUI](https://
 
 ### Quick start: ready-made workflows
 
-Copy-paste examples live in [`comfy-workflows/`](comfy-workflows/) — [`txt2img.json`](comfy-workflows/txt2img.json) and [`img2img.json`](comfy-workflows/img2img.json). They use stock ComfyUI nodes and the default SD 1.5 checkpoint. The **only** field you must change is `ckpt_name` (set it to a checkpoint you actually have). For SDXL, also bump the latent size from `512` to `1024`.
+Copy-paste examples live in [`comfy-workflows/`](comfy-workflows/):
+
+- **SD 1.5 / SDXL** — [`txt2img.json`](comfy-workflows/txt2img.json) and [`img2img.json`](comfy-workflows/img2img.json). Stock nodes, default SD 1.5 checkpoint. The **only** field you must change is `ckpt_name`. For SDXL, also bump the latent size from `512` to `1024`.
+- **FLUX.1** (best quality; needs ~12 GB VRAM via the fp8 build) — [`flux-txt2img.json`](comfy-workflows/flux-txt2img.json) and [`flux-img2img.json`](comfy-workflows/flux-img2img.json). Uses the all-in-one `flux1-dev-fp8.safetensors` checkpoint (`models/checkpoints/`), the FLUX-only `EmptySD3LatentImage` (16-channel) latent, a `FluxGuidance` node (~3.5), and — for img2img — an `ImageScale` node that resizes the base photo to a multiple of 16 (FLUX requires this). KSampler `cfg` stays `1.0`; steering is via `FluxGuidance`.
 
 ### Placeholders
 
