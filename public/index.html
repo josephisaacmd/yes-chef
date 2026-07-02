@@ -38,7 +38,7 @@
       <div class="home-grid">
         <div class="card home-card home-today">
           <div class="home-card-head">
-            <h3>Today</h3>
+            <h3>This week's lunches</h3>
             <button class="link-btn" data-tab="plan">Open plan →</button>
           </div>
           <div id="home-today-slots"></div>
@@ -87,13 +87,13 @@
       </div>
       <div class="row pick-actions">
         <label style="flex:0 0 auto;">Skip last
-          <input type="number" id="pick-avoid" min="0" max="365" value="14" style="width:5rem" />
+          <input type="number" id="pick-avoid" min="0" max="365" value="1" style="width:5rem" />
           days
         </label>
         <label style="flex:1; min-width:200px;">
           Variety <span id="variety-value" class="muted" style="font-weight:600">0.5</span>
           <input type="range" id="pick-variety" min="0" max="1" step="0.05" value="0.5" />
-          <span class="muted" style="font-size:.75rem">0 = pure random · 1 = prefer new / under-eaten</span>
+          <span class="muted" style="font-size:.75rem">0 = pure random · 1 = trust the model (cadence, kicks, reactions)</span>
         </label>
       </div>
       <div class="row pick-actions">
@@ -111,10 +111,19 @@
         <div class="row">
           <label>Slot
             <select id="pick-slot">
+              <option value="lunch" selected>Lunch</option>
+              <option value="side">Veggie side</option>
               <option value="breakfast">Breakfast</option>
-              <option value="lunch">Lunch</option>
-              <option value="dinner" selected>Dinner</option>
+              <option value="dinner">Dinner</option>
               <option value="snack">Snack</option>
+              <option value="">— no slot —</option>
+            </select>
+          </label>
+          <label>Who ate
+            <select id="pick-eater">
+              <option value="christine">Christine</option>
+              <option value="joseph">Joseph</option>
+              <option value="both">Both</option>
             </select>
           </label>
           <label>Date
@@ -132,25 +141,18 @@
     <!-- ============ PLAN ============ -->
     <section class="view" data-view="plan" hidden>
       <div class="view-header">
-        <h2>This week</h2>
+        <h2 id="plan-title">This week</h2>
         <div class="plan-controls">
-          <div class="day-selector" id="plan-day-selector">
-            <button data-days="1">1d</button>
-            <button data-days="2">2d</button>
-            <button data-days="3">3d</button>
-            <button data-days="5">5d</button>
-            <button data-days="7">7d</button>
-          </div>
           <div class="nav-controls">
-            <button id="plan-prev" title="Previous">‹</button>
-            <button id="plan-today">Today</button>
-            <button id="plan-next" title="Next">›</button>
+            <button id="plan-prev" title="Previous week">‹</button>
+            <button id="plan-today">This week</button>
+            <button id="plan-next" title="Next week">›</button>
           </div>
-          <button id="plan-autofill" class="primary">✨ Auto-fill</button>
+          <button id="plan-autofill" class="primary">✨ Auto-fill week</button>
         </div>
       </div>
-      <p class="muted">Click a slot to assign a meal. Mark planned meals as eaten when the day comes.</p>
-      <div id="plan-grid" class="plan-grid"></div>
+      <p class="muted">Christine's packed lunch (with veggie side) and the shared dinner, Monday to Sunday. She won't eat the same meal in back-to-back slots — auto-fill respects that.</p>
+      <div id="plan-grid" class="plan-grid" data-days="7"></div>
     </section>
 
     <!-- ============ HISTORY ============ -->
@@ -185,10 +187,6 @@
       </div>
       <div class="filter-row">
         <input id="photos-search" placeholder="Filter by meal name…" />
-        <label style="display:inline-flex; align-items:center; gap:.35rem; margin:0">
-          <input type="checkbox" id="photos-only-analyzed" style="width:auto" />
-          <span>only AI-analyzed</span>
-        </label>
       </div>
       <div id="photos-grid" class="photos-grid"></div>
     </section>
@@ -196,20 +194,6 @@
     <!-- ============ MEALS ============ -->
     <section class="view" data-view="meals" hidden>
       <h2>Meals</h2>
-
-      <details class="card" id="ai-card">
-        <summary><strong>🤖 AI vision</strong> <span id="ai-summary" class="muted"></span></summary>
-        <div class="row" style="align-items:center">
-          <label style="flex:1">
-            Active model
-            <select id="ai-quick-switch"></select>
-          </label>
-          <button type="button" id="ai-test-btn">Test</button>
-          <button type="button" data-tab="settings">Manage →</button>
-        </div>
-        <div id="ai-warnings" class="ai-warnings"></div>
-        <span id="ai-test-result" class="muted" style="font-size:.85rem; word-break:break-word; display:block; margin-top:.4rem"></span>
-      </details>
 
       <dialog id="diagnostics-dialog" class="diagnostics-dialog">
         <form method="dialog">
@@ -258,20 +242,12 @@
         </label>
         <label>Photos
           <div id="meal-photos" class="photo-manager"></div>
-          <input type="file" id="meal-photo-input" accept="image/*" multiple />
+          <div class="row" style="margin:.25rem 0">
+            <input type="file" id="meal-photo-input" accept="image/*" multiple />
+            <button type="button" id="meal-generate-img" hidden>🎨 Generate image</button>
+          </div>
           <span id="meal-photo-status" class="muted" style="font-size:.8rem"></span>
         </label>
-        <details id="nutrition-section">
-          <summary><strong>Nutrition</strong> <span id="nutrition-summary" class="muted"></span></summary>
-          <div class="nutrition-grid">
-            <label>Calories <input type="number" name="n_calories" step="1" min="0" /></label>
-            <label>Protein (g) <input type="number" name="n_protein" step="0.1" min="0" /></label>
-            <label>Carbs (g) <input type="number" name="n_carbs" step="0.1" min="0" /></label>
-            <label>Fat (g) <input type="number" name="n_fat" step="0.1" min="0" /></label>
-            <label>Fiber (g) <input type="number" name="n_fiber" step="0.1" min="0" /></label>
-            <label>Sodium (mg) <input type="number" name="n_sodium" step="1" min="0" /></label>
-          </div>
-        </details>
         <div class="row">
           <button type="submit" class="primary">Save</button>
           <button type="button" id="meal-form-reset">Clear</button>
@@ -296,12 +272,47 @@
           <button type="button" id="ai-add-btn" class="primary">+ Add configuration</button>
         </div>
         <p class="muted" style="margin:.25rem 0 .75rem">
-          Add as many providers as you want — Anthropic, OpenAI, OpenRouter, Ollama, or any OpenAI-compatible server.
-          The one marked <span class="ai-active-pill">active</span> is used for photo analysis. You can switch between
-          them instantly from the Meals tab — no restart required.
+          <em>AI photo analysis is currently disabled in the UI.</em> These configurations are kept for when it's
+          re-enabled later — add as many providers as you want (Anthropic, OpenAI, OpenRouter, Ollama, or any
+          OpenAI-compatible server). The one marked <span class="ai-active-pill">active</span> would be used for analysis.
         </p>
         <div id="ai-configs-list" class="ai-configs-list">
           <p class="muted">Loading…</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h3 style="margin:0">🎨 ComfyUI image generation</h3>
+          <button type="button" id="comfy-test-btn">Test connection</button>
+        </div>
+        <p class="muted" style="margin:.25rem 0 .75rem">
+          Generate a dish image for any meal using your own
+          <a href="https://github.com/comfyanonymous/ComfyUI" target="_blank" rel="noopener">ComfyUI</a>
+          server. Paste workflows exported with <strong>Save (API Format)</strong> — or start from the examples in
+          <code>comfy-workflows/</code>. Put the literal token <code>%prompt%</code> in the positive-prompt node;
+          for image-to-image, also put <code>%image%</code> in the <code>LoadImage</code> node's filename. Optionally
+          add <code>%seed%</code> (unquoted) as the KSampler seed for a fresh random image each run.
+        </p>
+        <label>
+          Base URL
+          <input type="text" id="comfy-base-url" placeholder="e.g. http://localhost:8188 or http://your-host:8188" />
+        </label>
+        <label>
+          Prompt template <span class="muted" style="font-weight:400">(optional — <code>{meal}</code> is replaced with the meal name)</span>
+          <input type="text" id="comfy-prompt-template" placeholder="professional food photography of {meal}, plated, natural light, appetizing" />
+        </label>
+        <label>
+          Text-to-image workflow (API format) <span class="muted" style="font-weight:400">— must contain <code>%prompt%</code></span>
+          <textarea id="comfy-workflow-txt2img" rows="7" spellcheck="false" placeholder='{ "3": { "class_type": "KSampler", ... }, "6": { "class_type": "CLIPTextEncode", "inputs": { "text": "%prompt%", ... } }, "9": { "class_type": "SaveImage", ... } }'></textarea>
+        </label>
+        <label>
+          Image-to-image workflow (API format) <span class="muted" style="font-weight:400">— optional; must contain <code>%prompt%</code> and <code>%image%</code></span>
+          <textarea id="comfy-workflow-img2img" rows="7" spellcheck="false" placeholder='{ "10": { "class_type": "LoadImage", "inputs": { "image": "%image%", "upload": "image" } }, "6": { "class_type": "CLIPTextEncode", "inputs": { "text": "%prompt%", ... } }, ... }'></textarea>
+        </label>
+        <div class="row">
+          <button type="button" id="comfy-save" class="primary">Save</button>
+          <span id="comfy-status" class="muted" style="font-size:.85rem; word-break:break-word"></span>
         </div>
       </div>
 
@@ -435,8 +446,8 @@
 
         <label>Slots to fill</label>
         <div class="slot-pickers">
-          <label><input type="checkbox" name="slot" value="breakfast" /> Breakfast</label>
           <label><input type="checkbox" name="slot" value="lunch" checked /> Lunch</label>
+          <label><input type="checkbox" name="slot" value="side" /> Veggie side</label>
           <label><input type="checkbox" name="slot" value="dinner" checked /> Dinner</label>
         </div>
 
@@ -447,7 +458,7 @@
 
         <div class="row">
           <label style="flex:0 0 auto">Skip last
-            <input type="number" id="suggest-avoid" min="0" max="365" value="14" style="width:5rem" />
+            <input type="number" id="suggest-avoid" min="0" max="365" value="1" style="width:5rem" />
             days
           </label>
           <label style="display:inline-flex; align-items:center; gap:.4rem; flex:1">
@@ -486,20 +497,47 @@
         <input type="date" id="history-add-date" />
       </label>
       <label>
-        Slot
+        Slot <span class="muted" style="font-weight:400">(optional)</span>
         <select id="history-add-slot">
+          <option value="" selected>— no slot —</option>
           <option value="breakfast">Breakfast</option>
           <option value="lunch">Lunch</option>
           <option value="side">Veg side</option>
-          <option value="dinner" selected>Dinner</option>
+          <option value="dinner">Dinner</option>
           <option value="snack">Snack</option>
         </select>
       </label>
+      <label>
+        Who ate
+        <select id="history-add-eater">
+          <option value="both" selected>Both</option>
+          <option value="christine">Christine</option>
+          <option value="joseph">Joseph</option>
+        </select>
+      </label>
+      <p class="muted" style="font-size:.8rem; margin:.1rem 0 0">Log as many meals per day as you like — slot is just an optional label.</p>
       <div class="row" style="margin-top:.5rem">
         <button type="button" id="history-add-pick" class="primary">Choose meal…</button>
         <button value="cancel">Cancel</button>
       </div>
       <p id="history-add-status" class="muted" style="font-size:.85rem; margin-top:.4rem"></p>
+    </form>
+  </dialog>
+
+  <!-- ====== History entry actions (react / delete) ====== -->
+  <dialog id="entry-action-dialog" class="ai-edit-dialog">
+    <form method="dialog">
+      <h3 id="entry-action-title">Entry</h3>
+      <p class="muted" id="entry-action-sub" style="margin:.25rem 0 .5rem"></p>
+      <div class="row">
+        <button type="button" id="entry-act-liked">👍 Liked it</button>
+        <button type="button" id="entry-act-bad">😣 Sat poorly</button>
+        <button type="button" id="entry-act-clear" hidden>Clear reaction</button>
+      </div>
+      <div class="row" style="margin-top:.5rem">
+        <button type="button" id="entry-act-delete" class="danger">🗑 Delete entry</button>
+        <button value="cancel">Cancel</button>
+      </div>
     </form>
   </dialog>
 

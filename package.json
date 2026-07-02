@@ -1,12 +1,13 @@
 {
   "name": "yes-chef",
-  "version": "0.6.0",
-  "description": "yes-chef — Your Smart Menu Planner. Meal picker, planner, history, AI photo analysis & agent API.",
+  "version": "0.10.0",
+  "description": "yes-chef \u2014 Your Smart Menu Planner. Weekly lunch meal-prep planner, flexible eating history, ComfyUI image generation & agent API.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "import": "node scripts/import-csv.js"
+    "import": "node scripts/import-csv.js",
+    "test": "node scripts/test-scorer.js"
   },
   "engines": {
     "node": ">=20"

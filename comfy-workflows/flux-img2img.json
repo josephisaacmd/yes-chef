@@ -1,0 +1,46 @@
+{
+  "3": {
+    "inputs": {
+      "seed": %seed%, "steps": 20, "cfg": 1.0,
+      "sampler_name": "euler", "scheduler": "simple", "denoise": 0.75,
+      "model": ["4", 0], "positive": ["26", 0], "negative": ["7", 0], "latent_image": ["11", 0]
+    },
+    "class_type": "KSampler", "_meta": { "title": "KSampler" }
+  },
+  "4": {
+    "inputs": { "ckpt_name": "flux1-dev-fp8.safetensors" },
+    "class_type": "CheckpointLoaderSimple", "_meta": { "title": "Load Checkpoint" }
+  },
+  "6": {
+    "inputs": { "text": "%prompt%", "clip": ["4", 1] },
+    "class_type": "CLIPTextEncode", "_meta": { "title": "Positive prompt" }
+  },
+  "7": {
+    "inputs": { "text": "", "clip": ["4", 1] },
+    "class_type": "CLIPTextEncode", "_meta": { "title": "Negative (empty for Flux)" }
+  },
+  "26": {
+    "inputs": { "guidance": 3.5, "conditioning": ["6", 0] },
+    "class_type": "FluxGuidance", "_meta": { "title": "Flux Guidance" }
+  },
+  "10": {
+    "inputs": { "image": "%image%", "upload": "image" },
+    "class_type": "LoadImage", "_meta": { "title": "Load base image (from yes-chef)" }
+  },
+  "12": {
+    "inputs": { "upscale_method": "lanczos", "width": 1024, "height": 1024, "crop": "center", "image": ["10", 0] },
+    "class_type": "ImageScale", "_meta": { "title": "Resize to 1024 (Flux-safe, multiple of 16)" }
+  },
+  "11": {
+    "inputs": { "pixels": ["12", 0], "vae": ["4", 2] },
+    "class_type": "VAEEncode", "_meta": { "title": "VAE Encode" }
+  },
+  "8": {
+    "inputs": { "samples": ["3", 0], "vae": ["4", 2] },
+    "class_type": "VAEDecode", "_meta": { "title": "VAE Decode" }
+  },
+  "9": {
+    "inputs": { "filename_prefix": "yes-chef", "images": ["8", 0] },
+    "class_type": "SaveImage", "_meta": { "title": "Save Image" }
+  }
+}

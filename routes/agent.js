@@ -13,9 +13,14 @@ const {
   VALID_AI_PROVIDERS, listAiConfigs, getAiConfigById,
   createAiConfig, updateAiConfig, deleteAiConfig, activateAiConfig,
   listAgentTokens, createAgentToken, deleteAgentToken,
+  getSetting, setSetting,
+  EATERS, VALID_REACTIONS, defaultEaterForSlot,
+  logSuggestionBatch, resolveSuggestionBatch, listSuggestionBatches,
 } = require('../db');
 const { pickMeals, localTodayISO } = require('../lib/pick-algorithm');
 const ai = require('../lib/ai-provider');
+const comfy = require('../lib/comfyui');
+const { generateMealImage } = require('../lib/photos');
 
 const router = express.Router();
 
@@ -35,6 +40,10 @@ router.get('/spec', (req, res) => {
       { method: 'GET',  path: '/api/v1/agent/stats',           desc: 'Eating history statistics' },
       { method: 'GET',  path: '/api/v1/agent/meals',           desc: 'List the meal library (filter by q / tag)' },
       { method: 'POST', path: '/api/v1/agent/meals',           desc: 'Create a new meal { name, notes?, tags?, nutrition? }' },
+      { method: 'POST', path: '/api/v1/agent/entries',         desc: 'Log/plan a meal { meal_id, on_date?, slot?, status?, eater?, reaction? }' },
+      { method: 'GET',  path: '/api/v1/agent/suggestions',     desc: 'Recent suggestion batches + outcomes (ground truth for the model)' },
+      { method: 'POST', path: '/api/v1/agent/suggestions/:batchId/outcome', desc: 'Record { chosen_meal_id } or { none: true } for a batch' },
+      { method: 'POST', path: '/api/v1/agent/meals/:id/generate-image', desc: 'Generate a ComfyUI image for a meal { prompt?, mode?, photo_id? }' },
       { method: 'GET',  path: '/api/v1/agent/recommendations', desc: 'Top-N meal suggestions (variety-tunable)' },
       { method: 'POST', path: '/api/v1/agent/plan/suggest',     desc: 'Suggest meals to fill date×slot cells (preview, does not write)' },
       { method: 'GET',  path: '/api/v1/agent/notes',           desc: 'List notes/reminders (?unread=1, ?dismissed=0)' },
@@ -50,6 +59,9 @@ router.get('/spec', (req, res) => {
       { method: 'POST', path: '/api/v1/agent/ai/configs/:id/activate',  desc: 'Switch the active AI configuration (on the fly)' },
       { method: 'POST', path: '/api/v1/agent/ai/configs/:id/test',      desc: 'Probe a specific AI configuration' },
       { method: 'GET',  path: '/api/v1/agent/ai/test',                  desc: 'Probe the currently-active AI configuration' },
+      { method: 'GET',  path: '/api/v1/agent/comfyui',                  desc: 'Get ComfyUI image-generation config' },
+      { method: 'PUT',  path: '/api/v1/agent/comfyui',                  desc: 'Save ComfyUI config { base_url, workflow_json, prompt_template }' },
+      { method: 'POST', path: '/api/v1/agent/comfyui/test',            desc: 'Probe the ComfyUI server is reachable' },
       { method: 'GET',  path: '/api/v1/agent/tokens',                   desc: 'List agent API tokens (session only)' },
       { method: 'POST', path: '/api/v1/agent/tokens',                   desc: 'Create an agent API token (session only; returns secret once)' },
       { method: 'DELETE',path:'/api/v1/agent/tokens/:id',               desc: 'Revoke an agent API token (session only)' },
@@ -238,6 +250,46 @@ router.get('/ai/test', async (_req, res) => {
     res.json({ ai: ai.info(), ...result });
   } catch (err) {
     res.status(502).json({ ok: false, ai: ai.info(), error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ComfyUI image generation config.
+//   GET  /comfyui        → current config + status
+//   PUT  /comfyui        → save { base_url, workflow_json, prompt_template }
+//   POST /comfyui/test   → probe the server is reachable
+// The actual image generation lives on POST /api/meals/:id/generate-image.
+// ---------------------------------------------------------------------------
+router.get('/comfyui', (_req, res) => {
+  const cfg = comfy.getConfig();
+  res.json({ config: cfg, info: comfy.info() });
+});
+
+router.put('/comfyui', (req, res) => {
+  const b = req.body || {};
+  const str = (v) => (typeof v === 'string' ? v.trim() : '');
+  const cfg = {
+    base_url:         str(b.base_url),
+    prompt_template:  str(b.prompt_template),
+    // Accept the new split fields; fall back to the legacy single field.
+    workflow_txt2img: str(b.workflow_txt2img) || str(b.workflow_json),
+    workflow_img2img: str(b.workflow_img2img),
+  };
+  setSetting('comfyui', cfg);
+  res.json({ config: comfy.getConfig(), info: comfy.info() });
+});
+
+router.post('/comfyui/test', async (req, res) => {
+  const b = req.body || {};
+  // Allow testing an unsaved base_url passed in the body; fall back to stored.
+  const cfg = (typeof b.base_url === 'string' && b.base_url.trim())
+    ? { base_url: b.base_url.trim(), workflow_json: comfy.getConfig().workflow_json }
+    : undefined;
+  try {
+    const result = await comfy.testConnection(cfg);
+    res.json(result);
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err.message });
   }
 });
 
@@ -454,24 +506,137 @@ router.post('/meals', (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /api/v1/agent/entries
+// Body: { meal_id, on_date?, slot?, status?, eater?, reaction?, notes?, rating? }
+// Log (status='eaten') or plan (status='planned') a meal. Bearer-accessible so
+// external agents and budget-import scripts can write entries without a
+// browser session. slot is optional (""=no slot); on_date defaults to today;
+// eater defaults by slot (lunch/breakfast/side → christine, else both).
+// ---------------------------------------------------------------------------
+const ENTRY_SLOTS = new Set(['breakfast', 'lunch', 'side', 'dinner', 'snack']);
+const ENTRY_STATUSES = new Set(['planned', 'eaten']);
+router.post('/entries', (req, res) => {
+  const b = req.body || {};
+  const meal_id = b.meal_id;
+  const on_date = b.on_date || localTodayISO();
+  const slot    = b.slot == null ? '' : String(b.slot);
+  const status  = b.status || 'eaten';
+  const eater   = b.eater || defaultEaterForSlot(slot);
+  const reaction = b.reaction ?? null;
+  const notes   = typeof b.notes === 'string' ? b.notes : '';
+  const rating  = b.rating ?? null;
+
+  if (!meal_id) return res.status(400).json({ error: 'meal_id required' });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(on_date)) return res.status(400).json({ error: 'on_date must be YYYY-MM-DD' });
+  if (!(slot === '' || ENTRY_SLOTS.has(slot))) return res.status(400).json({ error: 'bad slot' });
+  if (!ENTRY_STATUSES.has(status)) return res.status(400).json({ error: 'bad status' });
+  if (!EATERS.includes(eater)) return res.status(400).json({ error: `bad eater (use: ${EATERS.join(', ')})` });
+  if (!(reaction === null || VALID_REACTIONS.includes(reaction))) return res.status(400).json({ error: 'bad reaction' });
+  const meal = db.prepare('SELECT id, name FROM meals WHERE id = ?').get(meal_id);
+  if (!meal) return res.status(400).json({ error: 'meal does not exist' });
+
+  const info = db.prepare(`
+    INSERT INTO entries (meal_id, on_date, slot, status, eater, reaction, notes, rating)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(meal_id, on_date, slot, status, eater, reaction, notes, rating);
+  const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(info.lastInsertRowid);
+  row.meal = { id: meal.id, name: meal.name };
+  res.status(201).json(row);
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/agent/meals/:id/generate-image
+// Body: { prompt?, mode?: 'txt2img'|'img2img', photo_id? }
+// Bearer-accessible ComfyUI generation; saves the result as a meal photo.
+// ---------------------------------------------------------------------------
+router.post('/meals/:id/generate-image', async (req, res) => {
+  const meal = db.prepare('SELECT id, name FROM meals WHERE id = ?').get(req.params.id);
+  if (!meal) return res.status(404).json({ error: 'meal not found' });
+  try {
+    const saved = await generateMealImage(meal, {
+      mode:     req.body?.mode,
+      photo_id: req.body?.photo_id,
+      prompt:   req.body?.prompt,
+    });
+    res.status(201).json(saved);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message, ...(err.detail ? { detail: err.detail } : {}) });
+    res.status(500).json({ error: 'image generation failed', detail: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/v1/agent/recommendations?variety=0.5&n=5&tag=...&avoid_days=14
+//   &log=1&slot=lunch&date=YYYY-MM-DD&eater=christine
 // Top-N meal suggestions for the agent or the Pick view.
+// With log=1 the batch is written to suggestion_log (ground truth for the
+// predictive model) and the response includes batch_id; record what happened
+// via POST /suggestions/:batchId/outcome.
 // ---------------------------------------------------------------------------
 router.get('/recommendations', (req, res) => {
   const tags = [].concat(req.query.tag || []).filter(Boolean);
   const variety = parseFloat(req.query.variety ?? '0.5');
-  const avoid_days = parseInt(req.query.avoid_days ?? '14', 10);
+  const avoid_days = parseInt(req.query.avoid_days ?? '1', 10);
   const n = clampInt(req.query.n, 1, 25, 5);
+  const eater = ['joseph', 'christine', 'both'].includes(req.query.eater) ? req.query.eater : 'christine';
 
-  const result = pickMeals({ tags, variety, avoidDays: avoid_days, limit: n });
+  // If we know which slot/date this is for, exclude meals already occupying
+  // adjacent meal occasions (no back-to-back repeats).
+  const excludeIds = [];
+  const forDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : null;
+  if (forDate) {
+    const near = [isoOffset(forDate, -1), forDate, isoOffset(forDate, 1)];
+    const rows = db.prepare(
+      `SELECT meal_id FROM entries WHERE on_date IN (?, ?, ?)`
+    ).all(...near);
+    excludeIds.push(...rows.map(r => r.meal_id));
+  }
+
+  const result = pickMeals({ tags, variety, avoidDays: avoid_days, limit: n, eater, excludeIds });
   if (!result.picks.length) return res.status(404).json({ error: 'no meals match' });
   attachTagsToMeals(result.picks);
+
+  let batch_id = null;
+  if (req.query.log === '1' || req.query.log === 'true') {
+    const context = {
+      tags, variety, avoid_days,
+      slot:  (req.query.slot || '') || undefined,
+      date:  (req.query.date || '') || undefined,
+      eater: (req.query.eater || '') || undefined,
+      source: req.auth?.kind === 'agent' ? `agent:${req.auth.token_prefix}` : 'ui',
+    };
+    batch_id = logSuggestionBatch(result.picks.map((m, i) => ({ meal_id: m.id, rank: i + 1 })), context);
+  }
+
   res.json({
     variety, avoid_days, tags,
     candidates_considered: result.candidates_considered,
     fallback: result.fallback,
+    batch_id,
     picks: result.picks,
   });
+});
+
+// ---------------------------------------------------------------------------
+// Suggestion feedback — the learning signal.
+//   POST /suggestions/:batchId/outcome  { chosen_meal_id } or { none: true }
+//   GET  /suggestions?limit=50          recent batches with outcomes
+// ---------------------------------------------------------------------------
+router.post('/suggestions/:batchId/outcome', (req, res) => {
+  const b = req.body || {};
+  const rejected = b.none === true;
+  const chosenMealId = rejected ? null : Number(b.chosen_meal_id);
+  if (!rejected && !Number.isFinite(chosenMealId)) {
+    return res.status(400).json({ error: 'pass { chosen_meal_id } or { none: true }' });
+  }
+  const updated = resolveSuggestionBatch(req.params.batchId, { chosenMealId, rejected });
+  if (!updated) return res.status(404).json({ error: 'unknown batch' });
+  res.json({ ok: true, batch_id: req.params.batchId, updated });
+});
+
+router.get('/suggestions', (req, res) => {
+  const limit = clampInt(req.query.limit, 1, 500, 50);
+  res.json({ batches: listSuggestionBatches({ limit }) });
 });
 
 // ---------------------------------------------------------------------------
@@ -500,18 +665,25 @@ router.post('/plan/suggest', (req, res) => {
 
   const tags        = Array.isArray(b.tags) ? b.tags : [];
   const variety     = parseFloat(b.variety ?? 0.5);
-  const avoid_days  = parseInt(b.avoid_days ?? 14, 10);
+  const avoid_days  = parseInt(b.avoid_days ?? 1, 10);
   const skip_filled = b.skip_filled !== false;
   const excludeIds  = new Set((Array.isArray(b.exclude_meal_ids) ? b.exclude_meal_ids : []).map(Number).filter(Number.isFinite));
 
-  // Find filled cells + accumulate already-planned meals (so we don't suggest dups).
-  const placeholders = dates.map(() => '?').join(',');
+  // Find filled cells + accumulate already-planned meals (so we don't suggest
+  // dups). Also pull the day before/after each requested date: Christine won't
+  // eat the same meal in consecutive meal occasions (e.g. last night's dinner
+  // as today's suggested lunch), so adjacent days' meals are excluded too.
+  const adjacentDates = new Set(dates);
+  for (const d of dates) { adjacentDates.add(isoOffset(d, -1)); adjacentDates.add(isoOffset(d, 1)); }
+  const allDates = Array.from(adjacentDates);
+  const placeholders = allDates.map(() => '?').join(',');
   const existingRows = db.prepare(
     `SELECT on_date, slot, meal_id FROM entries WHERE on_date IN (${placeholders})`
-  ).all(...dates);
+  ).all(...allDates);
+  const requestedSet = new Set(dates);
   const filledKeys = new Set();
   for (const r of existingRows) {
-    filledKeys.add(`${r.on_date}|${r.slot}`);
+    if (requestedSet.has(r.on_date)) filledKeys.add(`${r.on_date}|${r.slot}`);
     excludeIds.add(r.meal_id);
   }
 
@@ -530,6 +702,7 @@ router.post('/plan/suggest', (req, res) => {
     avoidDays: avoid_days,
     limit: cells.length,
     excludeIds: Array.from(excludeIds),
+    eater: 'christine',
   });
   if (!result.picks.length) {
     return res.status(404).json({ error: 'no meals match the filters (after exclusions)' });

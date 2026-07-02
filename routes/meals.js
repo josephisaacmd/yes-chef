@@ -3,25 +3,11 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
-const crypto = require('crypto');
-const { db, setMealTags, attachTagsToMeals, bulkImportMeals, safeJSON, DATA_DIR } = require('../db');
+const { db, setMealTags, attachTagsToMeals, bulkImportMeals, safeJSON } = require('../db');
 const { pickMeals } = require('../lib/pick-algorithm');
+const { PHOTO_DIR, MAX_PHOTO_BYTES, MIME_EXT, mimeFromName, saveMealPhoto, generateMealImage } = require('../lib/photos');
 
 const router = express.Router();
-
-const PHOTO_DIR = path.join(DATA_DIR, 'photos');
-fs.mkdirSync(PHOTO_DIR, { recursive: true });
-
-const MIME_EXT = {
-  'image/jpeg': 'jpg',
-  'image/jpg':  'jpg',
-  'image/png':  'png',
-  'image/webp': 'webp',
-  'image/gif':  'gif',
-  'image/heic': 'heic',
-  'image/heif': 'heif',
-};
-const MAX_PHOTO_BYTES = 15 * 1024 * 1024; // 15 MB
 
 // Builds the JOIN + WHERE + GROUP HAVING fragment for tag filtering.
 // Returns { sql, params } that callers append after `FROM meals m`.
@@ -72,15 +58,16 @@ router.get('/', (req, res) => {
   res.json(attachTagsToMeals(meals));
 });
 
-// GET /api/meals/random?tag=healthy&avoid_days=14&variety=0.5
+// GET /api/meals/random?tag=healthy&avoid_days=1&variety=0.5&eater=christine
 // Returns one meal selected by the scoring algorithm in lib/pick-algorithm.
-// `variety` ranges 0..1; 0 = pure random, 1 = strongly prefer novel/under-eaten.
+// `variety` ranges 0..1; 0 = pure random, 1 = trust the predictive model.
 router.get('/random', (req, res) => {
   const tags = [].concat(req.query.tag || []).filter(Boolean);
-  const avoid_days = parseInt(req.query.avoid_days ?? '14', 10);
+  const avoid_days = parseInt(req.query.avoid_days ?? '1', 10);
   const variety = parseFloat(req.query.variety ?? '0.5');
+  const eater = ['joseph', 'christine', 'both'].includes(req.query.eater) ? req.query.eater : 'christine';
 
-  const { picks, fallback } = pickMeals({ tags, variety, avoidDays: avoid_days, limit: 1 });
+  const { picks, fallback } = pickMeals({ tags, variety, avoidDays: avoid_days, limit: 1, eater });
   if (!picks.length) return res.status(404).json({ error: 'no meals match' });
   attachTagsToMeals(picks);
   const meal = picks[0];
@@ -193,28 +180,41 @@ router.post('/:id/photos', (req, res) => {
   if (!buf.length) return res.status(400).json({ error: 'empty image' });
   if (buf.length > MAX_PHOTO_BYTES) return res.status(413).json({ error: 'image too large' });
 
-  const filename = `${crypto.randomUUID()}.${ext}`;
-  const filePath = path.join(PHOTO_DIR, filename);
+  let saved;
   try {
-    fs.writeFileSync(filePath, buf);
-    // Confirm the file actually landed and has the right size — catches
-    // permission, full-disk, or read-only mount issues immediately.
-    const stat = fs.statSync(filePath);
-    if (stat.size !== buf.length) throw new Error(`size mismatch: wrote ${buf.length}, on-disk ${stat.size}`);
+    saved = saveMealPhoto(meal.id, buf, ext);
   } catch (err) {
-    console.error('[photos] write failed for meal', meal.id, 'at', filePath, '—', err.message);
+    console.error('[photos] write failed for meal', meal.id, '—', err.message);
     return res.status(500).json({
       error: 'failed to save photo file',
       detail: `${err.code || ''} ${err.message}`.trim(),
-      path: filePath,
     });
   }
+  res.status(201).json(saved);
+});
 
-  const maxRow = db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS m FROM meal_photos WHERE meal_id = ?').get(meal.id);
-  const sort_order = (maxRow?.m ?? -1) + 1;
-  const info = db.prepare('INSERT INTO meal_photos (meal_id, filename, sort_order) VALUES (?, ?, ?)')
-                 .run(meal.id, filename, sort_order);
-  res.status(201).json({ id: info.lastInsertRowid, filename, url: `/photos/${filename}` });
+// POST /api/meals/:id/generate-image  { prompt?, mode?, photo_id? }
+// Generates a dish image via the configured ComfyUI server and saves it as a
+// new meal photo. If `prompt` is omitted, one is built from the meal name +
+// the configured prompt template.
+//   mode = 'txt2img' (default) | 'img2img'
+//   For img2img, an existing photo is used as the base — `photo_id` selects
+//   which one, otherwise the meal's first photo is used.
+router.post('/:id/generate-image', async (req, res) => {
+  const meal = db.prepare('SELECT id, name FROM meals WHERE id = ?').get(req.params.id);
+  if (!meal) return res.status(404).json({ error: 'meal not found' });
+  try {
+    const saved = await generateMealImage(meal, {
+      mode:     req.body?.mode,
+      photo_id: req.body?.photo_id,
+      prompt:   req.body?.prompt,
+    });
+    res.status(201).json(saved);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message, ...(err.detail ? { detail: err.detail } : {}) });
+    console.error('[comfyui] generate failed for meal', meal.id, '—', err.message);
+    res.status(500).json({ error: 'image generation failed', detail: err.message });
+  }
 });
 
 // DELETE /api/meals/:id/photos/:photoId

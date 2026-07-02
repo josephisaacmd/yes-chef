@@ -7,6 +7,129 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.0] — 2026-07-02
+
+Phase 2 of the predictive-model roadmap: the scorer itself.
+
+### Changed — Pick algorithm v2 (per-meal cadence, kicks, reactions)
+
+- Every meal is now scored on **its own re-eat clock** learned from Christine's
+  history (median gap between eats), replacing the one-size-fits-all avoid
+  window: score is low right after eating, peaks at the meal's typical gap,
+  and decays to a floor when long overdue (old favourites stay suggestible).
+  Meals with <3 eats inherit their tags' cadence, then the global cadence.
+- **Kick detector**: eaten 2+ times within a week and still fresh → boost
+  ("on a kick 🔥"); 3+ eats in two weeks gone quiet → satiation cooldown.
+  A meal keeping its normal weekly cadence is *not* treated as a kick.
+- **Reaction memory**: 😣 sat_poorly within 45 days → strong suppression;
+  👍 liked → mild boost. **Rejection memory**: suggested-and-passed-over in
+  the last 7 days → small penalty.
+- **Eater-aware**: scores compute from the requested eater's history
+  (default `christine` = entries she ate). Joseph's cafeteria lunches never
+  pollute her model.
+- **Explainable**: every suggestion carries a `_why` (e.g. "typically every
+  ~9d, last eaten 8d ago · on a kick 🔥"), shown in the top-5 UI.
+- `scoreMeals()` is exported as a deterministic function (accepts a `today`
+  override) — the hook for Phase 3 backtesting. `npm test` runs
+  `scripts/test-scorer.js`, 11 assertions over synthetic household patterns.
+- Recommendations accept `?date=` and exclude meals occupying adjacent meal
+  occasions; hard avoid-days default dropped from 14 → 1 everywhere (the
+  cadence model handles longer horizons).
+
+---
+
+## [0.9.0] — 2026-07-02
+
+Phase 1 of the predictive-model roadmap: capture the data the future scorer
+will learn from (who ate what, which suggestions landed, what sat poorly).
+
+### Added — Eater attribution
+
+- `entries.eater` (`joseph | christine | both`, default `both` for existing
+  rows). Slot-aware defaults on create: lunch/breakfast/side → `christine`
+  (her packed lunch), dinner/no-slot → `both`. Accepted by `/api/entries`,
+  `/api/v1/agent/entries`, and the MCP `log_meal` tool; "Who ate" selects in
+  the Pick view and History add dialog stay synced to the slot.
+
+### Added — Suggestion logging + outcome feedback
+
+- New `suggestion_log` table: every logged batch of offered suggestions, one
+  row per meal, with rank, context (slot/date/eater/tags/variety), and outcome
+  (`offered | chosen | passed | rejected`).
+- `GET /api/v1/agent/recommendations?log=1&slot=&date=&eater=` records the
+  batch and returns `batch_id`; `POST /api/v1/agent/suggestions/:batchId/outcome`
+  records `{ chosen_meal_id }` or `{ none: true }`; `GET /api/v1/agent/suggestions`
+  lists recent batches. The Pick tab's top-5 logs automatically — tapping
+  **Pick** records the choice, and a new **✗ None of these** records a decline.
+- MCP: `get_recommendations` gains `log/slot/date/eater` params; new
+  `record_suggestion_outcome` tool.
+
+### Added — Reactions (sensitive-stomach signal)
+
+- `entries.reaction` (`liked | sat_poorly`). Tapping a History entry now opens
+  an action dialog (👍 Liked / 😣 Sat poorly / delete) instead of a bare
+  delete-confirm; reactions render as emoji on the calendar.
+
+### Changed — Plan covers dinner again
+
+- The Plan tab is now Monday–Sunday with **Lunch (+ veggie side)** and
+  **Dinner** rows: Christine's packed lunch plus the shared dinner.
+- Auto-fill excludes meals planned/eaten on **adjacent days** as well as the
+  requested days — no same meal in back-to-back meal occasions (e.g. last
+  night's dinner suggested as today's lunch). The auto-fill dialog offers the
+  dinner slot again.
+
+---
+
+## [0.8.0] — 2026-06-30
+
+### Added — MCP server for Claude Desktop / Claude Code
+
+- New `mcp/` package: a stdio [Model Context Protocol](https://modelcontextprotocol.io) server that wraps the agent API as tools, so you can drive yes-chef conversationally — *"log that I had a burrito for lunch"*, *"suggest next week's lunches"*, *"generate an image for the salmon bowl"*. Configured with `YESCHEF_BASE_URL` + an agent token; see `mcp/README.md`.
+- Tools: `list_meals`, `get_state`, `get_stats`, `get_recommendations`, `suggest_week`, `create_meal`, `log_meal`, `push_note`, `generate_meal_image`.
+
+### Added — ComfyUI example workflows + random seed
+
+- Ready-to-paste example workflows in `comfy-workflows/` (`txt2img.json`, `img2img.json`) using stock nodes and the default SD 1.5 checkpoint — set `ckpt_name` and go.
+- New optional **`%seed%`** placeholder: put it unquoted as the KSampler seed and yes-chef substitutes a fresh random integer each run, so repeated generations vary instead of returning the same (ComfyUI-cached) image.
+
+### Added — Bearer-accessible write endpoints
+
+- `POST /api/v1/agent/entries` — log (eaten) or plan a meal `{ meal_id, on_date?, slot?, status? }` with a token. This is the bearer-friendly path for budget-import scripts; previously entry writes required a browser session. `slot` optional, `on_date` defaults to today, `status` defaults to `eaten`.
+- `POST /api/v1/agent/meals/:id/generate-image` — ComfyUI generation over the agent API.
+- Photo-save + ComfyUI generation logic factored into `lib/photos.js` and shared by the session and agent routes.
+
+---
+
+## [0.7.0] — 2026-06-30
+
+### Changed — Planner is now a weekly lunch meal-prep view
+
+- The **Plan** tab is now a single Monday–Friday work-week focused on the lunch you meal-prep for work, with a **Lunch** slot and an optional **Veggie side** per weekday. Breakfast & dinner are intentionally left out — figured out on the fly.
+- Removed the 1 / 2 / 3 / 5 / 7-day selector; navigation now moves a whole week at a time.
+- The **Home** "Today" card became **"This week's lunches"**, and the auto-fill dialog now offers Lunch + Veggie side.
+
+### Changed — Flexible eating history
+
+- Entry **slots are now optional**. You can log any number of meals on a day with no required breakfast/lunch/dinner slot — `slot` accepts `""` (no slot) in addition to the known labels. This makes it easy to pipe eating-out purchases from a budget feed (via the agent API / `POST /api/entries`) alongside manually-logged home-cooked meals.
+- The History "+ Add meal" dialog defaults to no slot and notes that you can log as many meals per day as you like.
+
+### Added — ComfyUI image generation (text-to-image + image-to-image)
+
+- Generate a dish image for any meal using your own self-hosted ComfyUI server. New **Settings → ComfyUI** card (base URL, prompt template, and two workflow fields).
+  - **Text-to-image** — `%prompt%` placeholder; triggered by **🎨 Generate image** on the Meals tab.
+  - **Image-to-image** — `%prompt%` + `%image%` placeholders; the **✨** button on a meal photo uploads that photo to ComfyUI (`POST /upload/image`) and feeds it to a `LoadImage` node, transforming it into a stylized version. The original photo is kept; the result is added as a new photo.
+- New `lib/comfyui.js` client (optionally upload base image → queue `/prompt` → poll `/history` → download `/view`) and endpoints:
+  - `GET/PUT /api/v1/agent/comfyui`, `POST /api/v1/agent/comfyui/test`
+  - `POST /api/meals/:id/generate-image` — body `{ prompt?, mode?: 'txt2img'|'img2img', photo_id? }`
+- Config is stored in a new `app_settings` key/value table and can be seeded from `COMFYUI_BASE_URL` / `COMFYUI_WORKFLOW_JSON` (text-to-image) / `COMFYUI_PROMPT_TEMPLATE`.
+
+### Changed — AI photo analysis & nutrition hidden
+
+- AI photo analysis and per-meal nutrition/macros are **removed from the UI** for now. The provider code (`lib/ai-provider.js`), its agent endpoints, and the `nutrition_json` / `analysis_json` database columns are left intact so the feature can be re-enabled later with minimal work.
+
+---
+
 ## [0.6.0] — 2026-06-13
 
 ### Added — Create meals inline from Plan & History

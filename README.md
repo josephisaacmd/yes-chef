@@ -2,7 +2,7 @@
 
 > **Your Smart Menu Planner**
 
-A self-hosted meal planner with a scoring-based meal picker, photo-aware AI nutrition analysis, and a clean agent API so autonomous AI assistants can push reminders, recommend meals, and help you plan the week — all from a single-container Docker app.
+A self-hosted meal planner focused on weekly lunch meal-prep: pick the lunch (plus an optional veggie side) you'll prep for work each weekday, keep a flexible day-by-day log of everything you actually eat, generate dish images with your own ComfyUI server, and let autonomous AI assistants push reminders and recommend meals through a clean agent API — all from a single-container Docker app.
 
 Repository: <https://github.com/josephisaacmd/yes-chef> · See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
@@ -10,17 +10,21 @@ Repository: <https://github.com/josephisaacmd/yes-chef> · See [CHANGELOG.md](CH
 
 ## Features
 
+- **📅 Weekly planner** — Monday–Sunday with a packed **Lunch (+ veggie side)** and the shared **Dinner** per day; entries are attributed to who ate them (`joseph | christine | both`). Breakfast stays unplanned. Auto-fill never repeats a meal in back-to-back meal occasions.
+- **🧠 Learning loop (in progress)** — every offered top-5 batch and its outcome (chosen / declined) is logged, plus 👍/😣 reactions on eaten entries — the ground truth for a per-person predictive scorer (see CHANGELOG 0.9.0).
 - **🎲 Pick a meal** — tag filter, recency-aware scoring algorithm with a tunable **variety** knob (0 = pure random → 1 = strongly prefer novel / under-eaten meals)
 - **✨ Try something new** — surfaces meals you've never eaten first, then the longest-ago ones
 - **📋 Top-N recommendations** — preview the 5 best picks ranked by the algorithm
-- **📅 Adaptive planner** — 1 / 2 / 3 / 5 / 7-day views with separate Lunch + Veg side slots
-- **📜 History calendar** — monthly calendar plus a stats panel (variety index, streak, top meals, breakdowns by slot / tag / month)
-- **🤖 Agent API** — Bearer-token gated endpoints under `/api/v1/agent/*` for autonomous AI agents (reminders, recommendations, state snapshots, photo analysis)
-- **🧠 AI photo analysis** — pluggable vision provider (OpenAI / Anthropic / Ollama) auto-tags meals and estimates nutrition (calories, macros, portion)
+- **📜 Flexible history** — log anything you ate on a given day; any number of entries per day, with an *optional* slot label (great for piping in eating-out purchases from a budget feed via the agent API, plus manual home-cooked entries). Monthly calendar + stats panel (variety index, streak, top meals, breakdowns).
+- **🎨 ComfyUI image generation** — generate a dish image for any meal using your own self-hosted [ComfyUI](https://github.com/comfyanonymous/ComfyUI) server: **text-to-image** from the meal name, or **image-to-image** that transforms one of the meal's photos into a stylized version
+- **🤖 Agent API** — Bearer-token gated endpoints under `/api/v1/agent/*` for autonomous AI agents (reminders, recommendations, state snapshots, logging/planning meals, image generation)
+- **🔌 MCP server** — talk to your planner from Claude Desktop / Claude Code: *"log that I had a burrito for lunch"*, *"suggest next week's lunches"*. See [`mcp/`](mcp/)
 - **🏷️ Tags** — free-form metadata per meal; manage / rename / delete from the Meals tab
 - **📥 CSV import** — bulk-import a food log; idempotent
 - **🔒 Auth** — shared household password (with 5-strike / 24-hour lockout), optional Google OAuth
 - **🐳 Docker-first** — single container, SQLite database, no external services required
+
+> **Note:** AI photo analysis & per-meal nutrition/macros are currently disabled in the UI. The provider code and database columns are intact, so they can be re-enabled later — see [AI photo analysis](#ai-photo-analysis-disabled).
 
 ---
 
@@ -182,6 +186,9 @@ The compose file binds only to `127.0.0.1:3000` so the app is not directly reach
 | `GOOGLE_CLIENT_SECRET` | | _(disabled)_ | Google OAuth client secret |
 | `ALLOWED_EMAILS` | | _(all)_ | Comma-separated Gmail addresses allowed to sign in via Google |
 | `PUBLIC_BASE_URL` | | _(disabled)_ | Your public URL, e.g. `https://menu.yourdomain.com` — required for OAuth redirect |
+| `COMFYUI_BASE_URL` | | _(disabled)_ | ComfyUI server URL for image generation, e.g. `http://localhost:8188`. Manageable from Settings → ComfyUI after first boot |
+| `COMFYUI_WORKFLOW_JSON` | | _(blank)_ | Seeds the **text-to-image** workflow (API format) with the `%prompt%` placeholder. The image-to-image workflow is set from the Settings UI. Usually easier to paste both there |
+| `COMFYUI_PROMPT_TEMPLATE` | | _(built-in)_ | Prompt template; `{meal}` is replaced with the meal name |
 
 Generate a good `SESSION_SECRET`:
 ```bash
@@ -286,9 +293,11 @@ All endpoints require authentication. All request and response bodies are JSON.
 | `PATCH` | `/api/entries/:id` | Partial update — e.g. flip `status` from `planned` to `eaten` |
 | `DELETE` | `/api/entries/:id` | Remove |
 
-`slot` ∈ `breakfast | lunch | dinner | snack`  
-`status` ∈ `planned | eaten`  
+`slot` is **optional** — `breakfast | lunch | side | dinner | snack` or `""` (no slot). Any number of entries may share a date.  
+`status` ∈ `planned | eaten` · `eater` ∈ `joseph | christine | both` (defaults by slot: lunch/breakfast/side → `christine`, else `both`) · `reaction` ∈ `liked | sat_poorly | null`  
 Dates are `YYYY-MM-DD`.
+
+The weekly planner uses `slot: "lunch"` (+ `"side"`) for Christine's packed lunch and `slot: "dinner"` for the shared dinner. The history log accepts entries with any slot or none. Reactions — especially `sat_poorly` — feed the predictive scorer.
 
 ---
 
@@ -323,12 +332,16 @@ yes-chef/
 │   └── agent.js              Agent API: stats, recommendations, notes, photo AI
 ├── lib/
 │   ├── pick-algorithm.js     Variety-tunable scoring picker
-│   └── ai-provider.js        Pluggable vision provider (OpenAI / Anthropic / Ollama)
+│   ├── comfyui.js            ComfyUI image-generation client
+│   └── ai-provider.js        Pluggable vision provider (currently UI-disabled)
 ├── public/
-│   ├── index.html            App shell (4 tabs + notes banner)
+│   ├── index.html            App shell (tabs + notes banner)
 │   ├── login.html            Login page
 │   ├── app.js                Vanilla JS SPA
 │   └── style.css             Styles (light + dark mode)
+├── mcp/                      MCP server (stdio) for Claude Desktop / Claude Code
+│   ├── server.js             Wraps the agent API as MCP tools
+│   └── README.md             Client setup
 ├── scripts/
 │   └── import-csv.js         CLI bulk importer
 ├── food-log.example.csv      Example CSV format
@@ -356,14 +369,25 @@ All endpoints live under `/api/v1/agent/*` and accept either a browser session *
 | GET   | `/api/v1/agent/state?back=14&forward=7` | Recent + upcoming entries, "needs planning" days, unread notes |
 | GET   | `/api/v1/agent/stats?days=365`  | Variety index, streak, top meals, breakdowns |
 | GET   | `/api/v1/agent/recommendations?variety=0.7&n=5&tag=quick` | Top-N picks from the scoring algorithm |
+| GET   | `/api/v1/agent/meals?q=&tag=`    | List the meal library |
+| POST  | `/api/v1/agent/meals`           | Create a meal `{ name, tags?, notes? }` |
+| POST  | `/api/v1/agent/entries`         | Log/plan a meal `{ meal_id, on_date?, slot?, status?, eater?, reaction? }` |
+| GET   | `/api/v1/agent/suggestions`     | Recent suggestion batches + outcomes |
+| POST  | `/api/v1/agent/suggestions/:batchId/outcome` | Record `{ chosen_meal_id }` or `{ none: true }` |
+| POST  | `/api/v1/agent/plan/suggest`    | Preview meals to fill date×slot cells (does not write) |
+| POST  | `/api/v1/agent/meals/:id/generate-image` | Generate a ComfyUI image `{ prompt?, mode?, photo_id? }` |
 | GET   | `/api/v1/agent/notes`           | List notes (`?unread=1`, `?dismissed=0`) |
 | POST  | `/api/v1/agent/notes`           | Push a reminder: `{ kind, text, due_date?, meta? }` |
 | PATCH | `/api/v1/agent/notes/:id`       | `{ read: true }` or `{ dismissed: true }` |
 | DELETE| `/api/v1/agent/notes/:id`       | Delete a note |
-| POST  | `/api/v1/agent/photos/:photoId/analyze` | Run vision provider on a meal photo |
-| POST  | `/api/v1/agent/photos/:photoId/apply`   | Apply analysis to the meal: `{ tags?, nutrition?, description? }` |
 
 **Note kinds** are `info`, `reminder`, `recommendation`, `warning`. Notes appear as a dismissable banner across the top of the web UI, so an agent that posts *"Take chicken out of freezer for tomorrow"* surfaces to the user immediately.
+
+`POST /api/v1/agent/entries` is the bearer-friendly way to log meals — point your budget-import script at it with a token, no browser session needed. `slot` is optional; `on_date` defaults to today; `status` defaults to `eaten`.
+
+### MCP server
+
+For conversational use from **Claude Desktop / Claude Code**, a stdio MCP server wraps these endpoints as tools (`log_meal`, `suggest_week`, `get_state`, `generate_meal_image`, …). See [`mcp/README.md`](mcp/README.md) for setup.
 
 ### Example: weekly planning reminder cron
 
@@ -382,9 +406,71 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 ---
 
-## AI photo analysis
+## ComfyUI image generation
 
-The Meals view shows a 🤖 button on each photo when an AI provider is configured. Click it to analyze the image and get back structured JSON:
+Generate a dish image for any meal using your own self-hosted [ComfyUI](https://github.com/comfyanonymous/ComfyUI) server. Two pipelines are supported:
+
+- **Text-to-image** — generate a fresh stylized image from the meal name / prompt.
+- **Image-to-image** — take an existing meal photo and transform it into a stylized version (the photo is uploaded into ComfyUI and fed to a `LoadImage` node).
+
+### Quick start: ready-made workflows
+
+Copy-paste examples live in [`comfy-workflows/`](comfy-workflows/):
+
+- **SD 1.5 / SDXL** — [`txt2img.json`](comfy-workflows/txt2img.json) and [`img2img.json`](comfy-workflows/img2img.json). Stock nodes, default SD 1.5 checkpoint. The **only** field you must change is `ckpt_name`. For SDXL, also bump the latent size from `512` to `1024`.
+- **FLUX.1** (best quality; needs ~12 GB VRAM via the fp8 build) — [`flux-txt2img.json`](comfy-workflows/flux-txt2img.json) and [`flux-img2img.json`](comfy-workflows/flux-img2img.json). Uses the all-in-one `flux1-dev-fp8.safetensors` checkpoint (`models/checkpoints/`), the FLUX-only `EmptySD3LatentImage` (16-channel) latent, a `FluxGuidance` node (~3.5), and — for img2img — an `ImageScale` node that resizes the base photo to a multiple of 16 (FLUX requires this). KSampler `cfg` stays `1.0`; steering is via `FluxGuidance`.
+
+### Placeholders
+
+If you'd rather export your own workflow: build it in ComfyUI, enable **dev mode** in settings, click **Save (API Format)**, then add these tokens:
+
+- **`%prompt%`** (both pipelines) — in the positive-prompt node's text:
+  ```json
+  "6": { "class_type": "CLIPTextEncode", "inputs": { "text": "%prompt%", "clip": ["4", 1] } }
+  ```
+- **`%image%`** (image-to-image only) — in the `LoadImage` node's filename. yes-chef uploads the meal photo to ComfyUI and substitutes its name here:
+  ```json
+  "10": { "class_type": "LoadImage", "inputs": { "image": "%image%", "upload": "image" } }
+  ```
+  Pair this with a `VAEEncode` → `KSampler` `latent_image` path and a `denoise` below ~0.7 so the original food stays recognizable (the examples use `0.55`).
+- **`%seed%`** (optional, both pipelines) — put it **unquoted** as the KSampler seed (`"seed": %seed%`). yes-chef fills it with a fresh random integer each run, so repeated generations vary instead of returning the same (ComfyUI-cached) image.
+
+Every workflow needs a `SaveImage` node so there's an output to download.
+
+### Configuring
+
+In yes-chef, go to **Settings → ComfyUI**:
+1. Set the **Base URL** (e.g. `http://localhost:8188` — for a Docker host, the address ComfyUI is reachable at from the yes-chef container).
+2. Optionally tweak the **prompt template** (`{meal}` is replaced with the meal name).
+3. Paste the **Text-to-image** workflow, and optionally the **Image-to-image** workflow.
+4. **Save**, then **Test connection** to confirm the server is reachable.
+
+Image-to-image is optional — if you leave that workflow blank, only text-to-image is enabled.
+
+### Generating
+
+On the **Meals** tab, open a saved meal:
+- **🎨 Generate image** runs text-to-image.
+- The **✨** button on each photo runs image-to-image using that photo as the base.
+
+Either way the server fills the placeholders, queues the workflow (`POST /prompt`), polls `/history/{id}` until it finishes, downloads the first image via `/view`, and saves it as a **new** photo on that meal (the base photo is kept).
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET  | `/api/v1/agent/comfyui`      | Get the current config + status |
+| PUT  | `/api/v1/agent/comfyui`      | Save `{ base_url, prompt_template, workflow_txt2img, workflow_img2img }` |
+| POST | `/api/v1/agent/comfyui/test` | Probe the server is reachable |
+| POST | `/api/meals/:id/generate-image` | Generate + attach an image. Body: `{ prompt?, mode?: 'txt2img'\|'img2img', photo_id? }` |
+
+See `lib/comfyui.js` for the implementation.
+
+---
+
+## AI photo analysis (disabled)
+
+> **Currently disabled in the UI.** The pluggable vision provider code (`lib/ai-provider.js`), its agent endpoints, and the `nutrition_json` / `analysis_json` database columns are all intact, so this can be re-enabled later. The AI providers can still be configured under **Settings → AI providers**. The rest of this section describes the feature as it worked / will work when re-enabled.
+
+When enabled, the Meals view shows a 🤖 button on each photo when an AI provider is configured. Click it to analyze the image and get back structured JSON:
 
 ```json
 {
@@ -424,17 +510,19 @@ Adding more providers is a ~30-line addition to `lib/ai-provider.js` — all pro
 
 ---
 
-## Pick algorithm — variety scoring
+## Pick algorithm — a repeat-consumption model
 
-Each candidate meal is scored on three signals, then weighted-random sampled:
+Each meal is scored on **its own re-eat clock**, learned from the eater's history (default: Christine's):
 
-- **Recency** — days since last eaten (saturates at 90)
-- **Rarity** — eaten less than its 1/N "fair share" of total entries
-- **Novelty** — flat bonus for never-eaten meals
+- **Dueness** — low right after eating, peaks at the meal's typical gap (median of its historical gaps), decays to a floor when long overdue. Meals with little history inherit their tags' cadence, then the global cadence.
+- **Kick detector** — eaten 2+ times within a week and still fresh → boost ("on a kick 🔥"); a kick gone quiet → satiation cooldown. Normal weekly cadence is not a kick.
+- **Reaction memory** — 😣 `sat_poorly` within 45 days suppresses hard; 👍 `liked` boosts mildly.
+- **Rejection memory** — suggested and passed over in the last 7 days → small penalty.
+- **Novelty** — never-eaten meals sit at a moderate constant so they surface without dominating.
 
-The `variety` slider linearly blends a uniform-weight distribution (0.0) with the variety score (1.0). The avoid-days window is applied as a hard filter, with automatic relaxation if it empties the candidate pool.
+The `variety` slider blends uniform randomness (0) with the model (1). `avoid_days` remains as a small hard filter (default 1 — the cadence curve handles longer horizons). Every suggestion carries a human-readable `_why`.
 
-See `lib/pick-algorithm.js` for the implementation.
+`scoreMeals()` is deterministic (accepts a `today` override) for backtesting; `pickMeals()` adds weighted sampling. `npm test` runs the scorer test suite. See `lib/pick-algorithm.js`.
 
 ---
 
