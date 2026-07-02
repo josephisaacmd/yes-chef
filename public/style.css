@@ -430,6 +430,8 @@ dialog::backdrop { background: rgba(0,0,0,.4); }
   background: var(--card);
 }
 .rec-row .meta { color: var(--muted); font-size: .8rem; }
+.rec-none { text-align: right; margin-top: .25rem; }
+.rec-none button { font-size: .82rem; color: var(--muted); }
 
 /* ---------- Stats panel ---------- */
 .stats-body { padding-top: .5rem; }

@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.0] — 2026-07-02
+
+Phase 1 of the predictive-model roadmap: capture the data the future scorer
+will learn from (who ate what, which suggestions landed, what sat poorly).
+
+### Added — Eater attribution
+
+- `entries.eater` (`joseph | christine | both`, default `both` for existing
+  rows). Slot-aware defaults on create: lunch/breakfast/side → `christine`
+  (her packed lunch), dinner/no-slot → `both`. Accepted by `/api/entries`,
+  `/api/v1/agent/entries`, and the MCP `log_meal` tool; "Who ate" selects in
+  the Pick view and History add dialog stay synced to the slot.
+
+### Added — Suggestion logging + outcome feedback
+
+- New `suggestion_log` table: every logged batch of offered suggestions, one
+  row per meal, with rank, context (slot/date/eater/tags/variety), and outcome
+  (`offered | chosen | passed | rejected`).
+- `GET /api/v1/agent/recommendations?log=1&slot=&date=&eater=` records the
+  batch and returns `batch_id`; `POST /api/v1/agent/suggestions/:batchId/outcome`
+  records `{ chosen_meal_id }` or `{ none: true }`; `GET /api/v1/agent/suggestions`
+  lists recent batches. The Pick tab's top-5 logs automatically — tapping
+  **Pick** records the choice, and a new **✗ None of these** records a decline.
+- MCP: `get_recommendations` gains `log/slot/date/eater` params; new
+  `record_suggestion_outcome` tool.
+
+### Added — Reactions (sensitive-stomach signal)
+
+- `entries.reaction` (`liked | sat_poorly`). Tapping a History entry now opens
+  an action dialog (👍 Liked / 😣 Sat poorly / delete) instead of a bare
+  delete-confirm; reactions render as emoji on the calendar.
+
+### Changed — Plan covers dinner again
+
+- The Plan tab is now Monday–Sunday with **Lunch (+ veggie side)** and
+  **Dinner** rows: Christine's packed lunch plus the shared dinner.
+- Auto-fill excludes meals planned/eaten on **adjacent days** as well as the
+  requested days — no same meal in back-to-back meal occasions (e.g. last
+  night's dinner suggested as today's lunch). The auto-fill dialog offers the
+  dinner slot again.
+
+---
+
 ## [0.8.0] — 2026-06-30
 
 ### Added — MCP server for Claude Desktop / Claude Code

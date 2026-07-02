@@ -14,6 +14,8 @@ const {
   createAiConfig, updateAiConfig, deleteAiConfig, activateAiConfig,
   listAgentTokens, createAgentToken, deleteAgentToken,
   getSetting, setSetting,
+  EATERS, VALID_REACTIONS, defaultEaterForSlot,
+  logSuggestionBatch, resolveSuggestionBatch, listSuggestionBatches,
 } = require('../db');
 const { pickMeals, localTodayISO } = require('../lib/pick-algorithm');
 const ai = require('../lib/ai-provider');
@@ -38,7 +40,9 @@ router.get('/spec', (req, res) => {
       { method: 'GET',  path: '/api/v1/agent/stats',           desc: 'Eating history statistics' },
       { method: 'GET',  path: '/api/v1/agent/meals',           desc: 'List the meal library (filter by q / tag)' },
       { method: 'POST', path: '/api/v1/agent/meals',           desc: 'Create a new meal { name, notes?, tags?, nutrition? }' },
-      { method: 'POST', path: '/api/v1/agent/entries',         desc: 'Log/plan a meal { meal_id, on_date?, slot?, status? }' },
+      { method: 'POST', path: '/api/v1/agent/entries',         desc: 'Log/plan a meal { meal_id, on_date?, slot?, status?, eater?, reaction? }' },
+      { method: 'GET',  path: '/api/v1/agent/suggestions',     desc: 'Recent suggestion batches + outcomes (ground truth for the model)' },
+      { method: 'POST', path: '/api/v1/agent/suggestions/:batchId/outcome', desc: 'Record { chosen_meal_id } or { none: true } for a batch' },
       { method: 'POST', path: '/api/v1/agent/meals/:id/generate-image', desc: 'Generate a ComfyUI image for a meal { prompt?, mode?, photo_id? }' },
       { method: 'GET',  path: '/api/v1/agent/recommendations', desc: 'Top-N meal suggestions (variety-tunable)' },
       { method: 'POST', path: '/api/v1/agent/plan/suggest',     desc: 'Suggest meals to fill date×slot cells (preview, does not write)' },
@@ -503,10 +507,11 @@ router.post('/meals', (req, res) => {
 
 // ---------------------------------------------------------------------------
 // POST /api/v1/agent/entries
-// Body: { meal_id, on_date?, slot?, status?, notes?, rating? }
+// Body: { meal_id, on_date?, slot?, status?, eater?, reaction?, notes?, rating? }
 // Log (status='eaten') or plan (status='planned') a meal. Bearer-accessible so
 // external agents and budget-import scripts can write entries without a
-// browser session. slot is optional (""=no slot); on_date defaults to today.
+// browser session. slot is optional (""=no slot); on_date defaults to today;
+// eater defaults by slot (lunch/breakfast/side → christine, else both).
 // ---------------------------------------------------------------------------
 const ENTRY_SLOTS = new Set(['breakfast', 'lunch', 'side', 'dinner', 'snack']);
 const ENTRY_STATUSES = new Set(['planned', 'eaten']);
@@ -516,6 +521,8 @@ router.post('/entries', (req, res) => {
   const on_date = b.on_date || localTodayISO();
   const slot    = b.slot == null ? '' : String(b.slot);
   const status  = b.status || 'eaten';
+  const eater   = b.eater || defaultEaterForSlot(slot);
+  const reaction = b.reaction ?? null;
   const notes   = typeof b.notes === 'string' ? b.notes : '';
   const rating  = b.rating ?? null;
 
@@ -523,13 +530,15 @@ router.post('/entries', (req, res) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(on_date)) return res.status(400).json({ error: 'on_date must be YYYY-MM-DD' });
   if (!(slot === '' || ENTRY_SLOTS.has(slot))) return res.status(400).json({ error: 'bad slot' });
   if (!ENTRY_STATUSES.has(status)) return res.status(400).json({ error: 'bad status' });
+  if (!EATERS.includes(eater)) return res.status(400).json({ error: `bad eater (use: ${EATERS.join(', ')})` });
+  if (!(reaction === null || VALID_REACTIONS.includes(reaction))) return res.status(400).json({ error: 'bad reaction' });
   const meal = db.prepare('SELECT id, name FROM meals WHERE id = ?').get(meal_id);
   if (!meal) return res.status(400).json({ error: 'meal does not exist' });
 
   const info = db.prepare(`
-    INSERT INTO entries (meal_id, on_date, slot, status, notes, rating)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(meal_id, on_date, slot, status, notes, rating);
+    INSERT INTO entries (meal_id, on_date, slot, status, eater, reaction, notes, rating)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(meal_id, on_date, slot, status, eater, reaction, notes, rating);
   const row = db.prepare('SELECT * FROM entries WHERE id = ?').get(info.lastInsertRowid);
   row.meal = { id: meal.id, name: meal.name };
   res.status(201).json(row);
@@ -558,7 +567,11 @@ router.post('/meals/:id/generate-image', async (req, res) => {
 
 // ---------------------------------------------------------------------------
 // GET /api/v1/agent/recommendations?variety=0.5&n=5&tag=...&avoid_days=14
+//   &log=1&slot=lunch&date=YYYY-MM-DD&eater=christine
 // Top-N meal suggestions for the agent or the Pick view.
+// With log=1 the batch is written to suggestion_log (ground truth for the
+// predictive model) and the response includes batch_id; record what happened
+// via POST /suggestions/:batchId/outcome.
 // ---------------------------------------------------------------------------
 router.get('/recommendations', (req, res) => {
   const tags = [].concat(req.query.tag || []).filter(Boolean);
@@ -569,12 +582,48 @@ router.get('/recommendations', (req, res) => {
   const result = pickMeals({ tags, variety, avoidDays: avoid_days, limit: n });
   if (!result.picks.length) return res.status(404).json({ error: 'no meals match' });
   attachTagsToMeals(result.picks);
+
+  let batch_id = null;
+  if (req.query.log === '1' || req.query.log === 'true') {
+    const context = {
+      tags, variety, avoid_days,
+      slot:  (req.query.slot || '') || undefined,
+      date:  (req.query.date || '') || undefined,
+      eater: (req.query.eater || '') || undefined,
+      source: req.auth?.kind === 'agent' ? `agent:${req.auth.token_prefix}` : 'ui',
+    };
+    batch_id = logSuggestionBatch(result.picks.map((m, i) => ({ meal_id: m.id, rank: i + 1 })), context);
+  }
+
   res.json({
     variety, avoid_days, tags,
     candidates_considered: result.candidates_considered,
     fallback: result.fallback,
+    batch_id,
     picks: result.picks,
   });
+});
+
+// ---------------------------------------------------------------------------
+// Suggestion feedback — the learning signal.
+//   POST /suggestions/:batchId/outcome  { chosen_meal_id } or { none: true }
+//   GET  /suggestions?limit=50          recent batches with outcomes
+// ---------------------------------------------------------------------------
+router.post('/suggestions/:batchId/outcome', (req, res) => {
+  const b = req.body || {};
+  const rejected = b.none === true;
+  const chosenMealId = rejected ? null : Number(b.chosen_meal_id);
+  if (!rejected && !Number.isFinite(chosenMealId)) {
+    return res.status(400).json({ error: 'pass { chosen_meal_id } or { none: true }' });
+  }
+  const updated = resolveSuggestionBatch(req.params.batchId, { chosenMealId, rejected });
+  if (!updated) return res.status(404).json({ error: 'unknown batch' });
+  res.json({ ok: true, batch_id: req.params.batchId, updated });
+});
+
+router.get('/suggestions', (req, res) => {
+  const limit = clampInt(req.query.limit, 1, 500, 50);
+  res.json({ batches: listSuggestionBatches({ limit }) });
 });
 
 // ---------------------------------------------------------------------------
@@ -607,14 +656,21 @@ router.post('/plan/suggest', (req, res) => {
   const skip_filled = b.skip_filled !== false;
   const excludeIds  = new Set((Array.isArray(b.exclude_meal_ids) ? b.exclude_meal_ids : []).map(Number).filter(Number.isFinite));
 
-  // Find filled cells + accumulate already-planned meals (so we don't suggest dups).
-  const placeholders = dates.map(() => '?').join(',');
+  // Find filled cells + accumulate already-planned meals (so we don't suggest
+  // dups). Also pull the day before/after each requested date: Christine won't
+  // eat the same meal in consecutive meal occasions (e.g. last night's dinner
+  // as today's suggested lunch), so adjacent days' meals are excluded too.
+  const adjacentDates = new Set(dates);
+  for (const d of dates) { adjacentDates.add(isoOffset(d, -1)); adjacentDates.add(isoOffset(d, 1)); }
+  const allDates = Array.from(adjacentDates);
+  const placeholders = allDates.map(() => '?').join(',');
   const existingRows = db.prepare(
     `SELECT on_date, slot, meal_id FROM entries WHERE on_date IN (${placeholders})`
-  ).all(...dates);
+  ).all(...allDates);
+  const requestedSet = new Set(dates);
   const filledKeys = new Set();
   for (const r of existingRows) {
-    filledKeys.add(`${r.on_date}|${r.slot}`);
+    if (requestedSet.has(r.on_date)) filledKeys.add(`${r.on_date}|${r.slot}`);
     excludeIds.add(r.meal_id);
   }
 

@@ -119,6 +119,13 @@
               <option value="">— no slot —</option>
             </select>
           </label>
+          <label>Who ate
+            <select id="pick-eater">
+              <option value="christine">Christine</option>
+              <option value="joseph">Joseph</option>
+              <option value="both">Both</option>
+            </select>
+          </label>
           <label>Date
             <input type="date" id="pick-date" />
           </label>
@@ -134,7 +141,7 @@
     <!-- ============ PLAN ============ -->
     <section class="view" data-view="plan" hidden>
       <div class="view-header">
-        <h2 id="plan-title">This week's lunches</h2>
+        <h2 id="plan-title">This week</h2>
         <div class="plan-controls">
           <div class="nav-controls">
             <button id="plan-prev" title="Previous week">‹</button>
@@ -144,8 +151,8 @@
           <button id="plan-autofill" class="primary">✨ Auto-fill week</button>
         </div>
       </div>
-      <p class="muted">Plan the lunch you'll meal-prep for work each weekday, plus an optional veggie side. Breakfast &amp; dinner are figured out on the fly. Mark a lunch as eaten once you've packed/eaten it.</p>
-      <div id="plan-grid" class="plan-grid" data-days="5"></div>
+      <p class="muted">Christine's packed lunch (with veggie side) and the shared dinner, Monday to Sunday. She won't eat the same meal in back-to-back slots — auto-fill respects that.</p>
+      <div id="plan-grid" class="plan-grid" data-days="7"></div>
     </section>
 
     <!-- ============ HISTORY ============ -->
@@ -441,6 +448,7 @@
         <div class="slot-pickers">
           <label><input type="checkbox" name="slot" value="lunch" checked /> Lunch</label>
           <label><input type="checkbox" name="slot" value="side" /> Veggie side</label>
+          <label><input type="checkbox" name="slot" value="dinner" checked /> Dinner</label>
         </div>
 
         <label>
@@ -499,12 +507,37 @@
           <option value="snack">Snack</option>
         </select>
       </label>
+      <label>
+        Who ate
+        <select id="history-add-eater">
+          <option value="both" selected>Both</option>
+          <option value="christine">Christine</option>
+          <option value="joseph">Joseph</option>
+        </select>
+      </label>
       <p class="muted" style="font-size:.8rem; margin:.1rem 0 0">Log as many meals per day as you like — slot is just an optional label.</p>
       <div class="row" style="margin-top:.5rem">
         <button type="button" id="history-add-pick" class="primary">Choose meal…</button>
         <button value="cancel">Cancel</button>
       </div>
       <p id="history-add-status" class="muted" style="font-size:.85rem; margin-top:.4rem"></p>
+    </form>
+  </dialog>
+
+  <!-- ====== History entry actions (react / delete) ====== -->
+  <dialog id="entry-action-dialog" class="ai-edit-dialog">
+    <form method="dialog">
+      <h3 id="entry-action-title">Entry</h3>
+      <p class="muted" id="entry-action-sub" style="margin:.25rem 0 .5rem"></p>
+      <div class="row">
+        <button type="button" id="entry-act-liked">👍 Liked it</button>
+        <button type="button" id="entry-act-bad">😣 Sat poorly</button>
+        <button type="button" id="entry-act-clear" hidden>Clear reaction</button>
+      </div>
+      <div class="row" style="margin-top:.5rem">
+        <button type="button" id="entry-act-delete" class="danger">🗑 Delete entry</button>
+        <button value="cancel">Cancel</button>
+      </div>
     </form>
   </dialog>
 

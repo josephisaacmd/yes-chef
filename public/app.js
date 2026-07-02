@@ -150,18 +150,25 @@ async function rollNew() {
   }
 }
 
-// Top-N recommendations using the same scoring algorithm.
+// Top-N recommendations using the scoring algorithm. Every batch shown here is
+// logged server-side (ground truth for the predictive model); picking a meal —
+// or declining all of them — records the outcome.
 async function showRecommendations() {
   const params = pickQueryString();
   const avoid = parseInt($('#pick-avoid').value, 10);
   if (Number.isFinite(avoid) && avoid >= 0) params.set('avoid_days', String(avoid));
   params.set('variety', String(currentVariety()));
   params.set('n', '5');
+  params.set('log', '1');
+  params.set('slot', $('#pick-slot').value);
+  params.set('eater', $('#pick-eater').value);
+  if ($('#pick-date').value) params.set('date', $('#pick-date').value);
   const wrap = $('#pick-recommendations');
   wrap.hidden = false;
   wrap.innerHTML = '<p class="muted">Thinking…</p>';
   try {
     const data = await api('/api/v1/agent/recommendations?' + params.toString());
+    const batchId = data.batch_id;
     wrap.innerHTML = '';
     const h = document.createElement('h4');
     h.textContent = `Top picks (variety ${data.variety.toFixed(2)})`;
@@ -178,14 +185,38 @@ async function showRecommendations() {
         </div>
         <button class="primary" data-id="${m.id}">Pick</button>`;
       row.querySelector('button').addEventListener('click', () => {
+        if (batchId) {
+          api(`/api/v1/agent/suggestions/${batchId}/outcome`, {
+            method: 'POST', body: { chosen_meal_id: m.id },
+          }).catch(() => {});
+        }
         showPicked(m);
         wrap.hidden = true;
       });
       wrap.appendChild(row);
     }
+    // Decline-all: the "she said no to everything" signal.
+    const noneRow = document.createElement('div');
+    noneRow.className = 'rec-none';
+    noneRow.innerHTML = `<button type="button">✗ None of these</button>`;
+    noneRow.querySelector('button').addEventListener('click', () => {
+      if (batchId) {
+        api(`/api/v1/agent/suggestions/${batchId}/outcome`, {
+          method: 'POST', body: { none: true },
+        }).catch(() => {});
+      }
+      wrap.hidden = true;
+    });
+    wrap.appendChild(noneRow);
   } catch (err) {
     wrap.innerHTML = `<p class="error">${err.message}</p>`;
   }
+}
+
+// Eater defaults mirror the household: Christine's packed lunch (+side) and
+// breakfast are hers; dinner and unslotted meals are shared.
+function defaultEaterForSlot(slot) {
+  return (slot === 'lunch' || slot === 'breakfast' || slot === 'side') ? 'christine' : 'both';
 }
 
 async function logPickAs(status) {
@@ -196,16 +227,21 @@ async function logPickAs(status) {
       meal_id: state.current.id,
       on_date: $('#pick-date').value || todayISO(),
       slot:    $('#pick-slot').value,
+      eater:   $('#pick-eater').value,
       status,
     },
   });
   alert(`Saved as ${status}.`);
 }
+$('#pick-slot').addEventListener('change', () => {
+  $('#pick-eater').value = defaultEaterForSlot($('#pick-slot').value);
+});
 
 async function renderPick() {
   await refreshTags();
   renderPickTags();
   $('#pick-date').value = $('#pick-date').value || todayISO();
+  $('#pick-eater').value = defaultEaterForSlot($('#pick-slot').value);
 }
 $('#pick-roll').addEventListener('click', rollPick);
 $('#pick-again').addEventListener('click', rollPick);
@@ -220,16 +256,15 @@ $('#pick-variety').addEventListener('input', () => {
 // ============================================================
 //                          PLAN
 // ============================================================
-// The plan is a single work-week of lunch meal-prep: a Lunch slot plus an
-// optional Veggie side for each weekday (Mon–Fri). Breakfast & dinner are
-// intentionally left off — figured out on the fly.
+// The plan covers Christine's packed lunch (with veggie side) and the shared
+// dinner, Monday–Sunday. Breakfast stays unplanned.
 const SLOT_GROUPS = [
-  { id: 'lunch', label: 'Lunch', sub: { id: 'side', label: 'Veggie side' } },
+  { id: 'lunch',  label: 'Lunch', sub: { id: 'side', label: 'Veggie side' } },
+  { id: 'dinner', label: 'Dinner' },
 ];
 // Flat list used for data fetching / mark-all logic.
 const SLOTS = SLOT_GROUPS.flatMap(g => g.sub ? [g.id, g.sub.id] : [g.id]);
-// Work week is Monday–Friday.
-const PLAN_DAYS = 5;
+const PLAN_DAYS = 7;
 
 // Anchor date — any date inside the displayed week.
 let planAnchor = new Date(); planAnchor.setHours(0, 0, 0, 0);
@@ -581,17 +616,39 @@ async function renderHistory() {
       const item = document.createElement('div');
       item.className = 'hist-entry';
       const nm = e.meal?.name || '(deleted)';
-      item.title = `${e.slot ? e.slot + ': ' : ''}${nm} — click to delete`;
-      item.innerHTML = `<span class="slot-dot" data-slot="${e.slot || ''}"></span><span class="hist-name">${escapeHtml(nm)}</span>`;
-      item.addEventListener('click', async () => {
-        if (!confirm('Delete this history entry?')) return;
-        await api(`/api/entries/${e.id}`, { method: 'DELETE' });
-        renderHistory();
-      });
+      const react = e.reaction === 'liked' ? ' 👍' : e.reaction === 'sat_poorly' ? ' 😣' : '';
+      item.title = `${e.slot ? e.slot + ': ' : ''}${nm} (${e.eater || 'both'}) — click for actions`;
+      item.innerHTML = `<span class="slot-dot" data-slot="${e.slot || ''}"></span><span class="hist-name">${escapeHtml(nm)}${react}</span>`;
+      item.addEventListener('click', () => openEntryActions(e));
       cell.appendChild(item);
     }
     wrap.appendChild(cell);
   }
+}
+
+// Tap a history entry → react (👍 / 😣) or delete. The 😣 flag is the
+// sensitive-stomach signal the predictive scorer will learn from.
+function openEntryActions(entry) {
+  const dlg = $('#entry-action-dialog');
+  $('#entry-action-title').textContent = entry.meal?.name || '(deleted meal)';
+  $('#entry-action-sub').textContent =
+    `${fmtDate(entry.on_date)}${entry.slot ? ' · ' + entry.slot : ''} · ${entry.eater || 'both'}` +
+    (entry.reaction ? ` · currently ${entry.reaction === 'liked' ? '👍' : '😣'}` : '');
+  $('#entry-act-clear').hidden = !entry.reaction;
+
+  const act = async (patch, del = false) => {
+    dlg.close();
+    try {
+      if (del) await api(`/api/entries/${entry.id}`, { method: 'DELETE' });
+      else await api(`/api/entries/${entry.id}`, { method: 'PATCH', body: patch });
+      renderHistory();
+    } catch (err) { alert(err.message); }
+  };
+  $('#entry-act-liked').onclick = () => act({ reaction: 'liked' });
+  $('#entry-act-bad').onclick   = () => act({ reaction: 'sat_poorly' });
+  $('#entry-act-clear').onclick = () => act({ reaction: null });
+  $('#entry-act-delete').onclick = () => { if (confirm('Delete this entry?')) act(null, true); };
+  dlg.showModal();
 }
 
 $('#history-prev').addEventListener('click', () => { historyAnchor.setMonth(historyAnchor.getMonth() - 1); renderHistory(); });
@@ -602,18 +659,23 @@ $('#history-today').addEventListener('click', () => { historyAnchor = new Date()
 $('#history-add').addEventListener('click', () => {
   $('#history-add-date').value = todayISO();
   $('#history-add-slot').value = '';
+  $('#history-add-eater').value = 'both';
   $('#history-add-status').textContent = '';
   $('#history-add-dialog').showModal();
+});
+$('#history-add-slot').addEventListener('change', () => {
+  $('#history-add-eater').value = defaultEaterForSlot($('#history-add-slot').value);
 });
 $('#history-add-pick').addEventListener('click', async () => {
   const date = $('#history-add-date').value;
   const slot = $('#history-add-slot').value;
+  const eater = $('#history-add-eater').value;
   if (!date) { $('#history-add-status').textContent = 'Pick a date first.'; return; }
   $('#history-add-dialog').close();
   const meal = await pickMealDialog();          // supports inline create
   if (!meal) return;
   try {
-    await api('/api/entries', { method: 'POST', body: { meal_id: meal.id, on_date: date, slot, status: 'eaten' } });
+    await api('/api/entries', { method: 'POST', body: { meal_id: meal.id, on_date: date, slot, eater, status: 'eaten' } });
     renderHistory();
   } catch (err) { alert(err.message); }
 });

@@ -118,21 +118,41 @@ server.tool('get_stats', 'Eating-history statistics: totals, variety index, stre
   { days: z.number().int().min(7).max(3650).optional() },
   async ({ days }) => ok(await call('GET', `/api/v1/agent/stats${days ? `?days=${days}` : ''}`)));
 
-server.tool('get_recommendations', 'Top-N meal recommendations from the variety-tunable scoring algorithm.',
+server.tool('get_recommendations',
+  'Top-N meal recommendations. Set log=true when the suggestions will actually be offered (e.g. read aloud to Christine) — the batch is recorded and the response includes batch_id; report what happened with record_suggestion_outcome. The batch/outcome log is the training data for the predictive model.',
   {
     variety: z.number().min(0).max(1).optional(),
     count: z.number().int().min(1).max(25).optional(),
     tag: z.string().optional(),
     avoid_days: z.number().int().min(0).max(365).optional(),
+    log: z.boolean().optional().describe('Record this batch as offered suggestions'),
+    slot: z.enum(['breakfast', 'lunch', 'side', 'dinner', 'snack']).optional(),
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    eater: z.enum(['joseph', 'christine', 'both']).optional(),
   },
-  async ({ variety, count, tag, avoid_days }) => {
+  async ({ variety, count, tag, avoid_days, log, slot, date, eater }) => {
     const qs = new URLSearchParams();
     if (variety != null) qs.set('variety', String(variety));
     if (count != null) qs.set('n', String(count));
     if (tag) qs.set('tag', tag);
     if (avoid_days != null) qs.set('avoid_days', String(avoid_days));
+    if (log) qs.set('log', '1');
+    if (slot) qs.set('slot', slot);
+    if (date) qs.set('date', date);
+    if (eater) qs.set('eater', eater);
     return ok(await call('GET', `/api/v1/agent/recommendations?${qs}`));
   });
+
+server.tool('record_suggestion_outcome',
+  'Record what happened to a logged suggestion batch: which meal was chosen, or that none were. Always call this after offering logged suggestions — it is the feedback the model learns from.',
+  {
+    batch_id: z.string(),
+    chosen_meal_id: z.number().int().optional().describe('The meal that was picked'),
+    none: z.boolean().optional().describe('True if all suggestions were declined'),
+  },
+  async ({ batch_id, chosen_meal_id, none }) =>
+    ok(await call('POST', `/api/v1/agent/suggestions/${encodeURIComponent(batch_id)}/outcome`,
+      none ? { none: true } : { chosen_meal_id })));
 
 server.tool('suggest_week',
   'Suggest meals to fill a week of lunch slots (preview only — does not save). Defaults to the next 5 weekdays and the lunch slot.',
@@ -157,22 +177,26 @@ server.tool('create_meal', 'Add a meal to the library.',
   async ({ name, tags, notes }) => ok(await call('POST', '/api/v1/agent/meals', { name, tags: tags || [], notes: notes || '' })));
 
 server.tool('log_meal',
-  'Log or plan a meal. Resolves the meal by name (or id). status "eaten" records history; "planned" puts it on the plan. Slot is optional; on_date defaults to today.',
+  'Log or plan a meal. Resolves the meal by name (or id). status "eaten" records history; "planned" puts it on the plan. Slot optional; on_date defaults to today. eater = who ate it (joseph | christine | both); if omitted the server defaults by slot (lunch/breakfast/side → christine, else both). reaction "sat_poorly" flags a sensitive-stomach reaction, "liked" a hit.',
   {
     meal: z.string().describe('Meal name or numeric id'),
     on_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
     slot: z.enum(['breakfast', 'lunch', 'side', 'dinner', 'snack', '']).optional(),
     status: z.enum(['eaten', 'planned']).optional(),
+    eater: z.enum(['joseph', 'christine', 'both']).optional(),
+    reaction: z.enum(['liked', 'sat_poorly']).optional(),
     notes: z.string().optional(),
     create_if_missing: z.boolean().optional(),
   },
-  async ({ meal, on_date, slot, status, notes, create_if_missing }) => {
+  async ({ meal, on_date, slot, status, eater, reaction, notes, create_if_missing }) => {
     const meal_id = await resolveMealId(meal, { createIfMissing: create_if_missing !== false });
     return ok(await call('POST', '/api/v1/agent/entries', {
       meal_id,
       on_date: on_date || todayISO(),
       slot: slot ?? '',
       status: status || 'eaten',
+      ...(eater ? { eater } : {}),
+      ...(reaction ? { reaction } : {}),
       notes: notes || '',
     }));
   });
@@ -200,4 +224,4 @@ server.tool('generate_meal_image',
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-console.error(`[yes-chef-mcp] connected to ${BASE} — 9 tools ready.`);
+console.error(`[yes-chef-mcp] connected to ${BASE} — 10 tools ready.`);

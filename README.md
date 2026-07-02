@@ -10,7 +10,8 @@ Repository: <https://github.com/josephisaac91/web-menu> · See [CHANGELOG.md](CH
 
 ## Features
 
-- **📅 Weekly lunch planner** — plan the lunch you'll meal-prep for work each weekday (Mon–Fri), plus an optional veggie side. Breakfast & dinner are figured out on the fly.
+- **📅 Weekly planner** — Monday–Sunday with a packed **Lunch (+ veggie side)** and the shared **Dinner** per day; entries are attributed to who ate them (`joseph | christine | both`). Breakfast stays unplanned. Auto-fill never repeats a meal in back-to-back meal occasions.
+- **🧠 Learning loop (in progress)** — every offered top-5 batch and its outcome (chosen / declined) is logged, plus 👍/😣 reactions on eaten entries — the ground truth for a per-person predictive scorer (see CHANGELOG 0.9.0).
 - **🎲 Pick a meal** — tag filter, recency-aware scoring algorithm with a tunable **variety** knob (0 = pure random → 1 = strongly prefer novel / under-eaten meals)
 - **✨ Try something new** — surfaces meals you've never eaten first, then the longest-ago ones
 - **📋 Top-N recommendations** — preview the 5 best picks ranked by the algorithm
@@ -293,10 +294,10 @@ All endpoints require authentication. All request and response bodies are JSON.
 | `DELETE` | `/api/entries/:id` | Remove |
 
 `slot` is **optional** — `breakfast | lunch | side | dinner | snack` or `""` (no slot). Any number of entries may share a date.  
-`status` ∈ `planned | eaten`  
+`status` ∈ `planned | eaten` · `eater` ∈ `joseph | christine | both` (defaults by slot: lunch/breakfast/side → `christine`, else `both`) · `reaction` ∈ `liked | sat_poorly | null`  
 Dates are `YYYY-MM-DD`.
 
-The weekly lunch planner uses `slot: "lunch"` (and `slot: "side"` for the veggie side) with `status: "planned"`. The history log accepts entries with any slot or none.
+The weekly planner uses `slot: "lunch"` (+ `"side"`) for Christine's packed lunch and `slot: "dinner"` for the shared dinner. The history log accepts entries with any slot or none. Reactions — especially `sat_poorly` — feed the predictive scorer.
 
 ---
 
@@ -370,7 +371,9 @@ All endpoints live under `/api/v1/agent/*` and accept either a browser session *
 | GET   | `/api/v1/agent/recommendations?variety=0.7&n=5&tag=quick` | Top-N picks from the scoring algorithm |
 | GET   | `/api/v1/agent/meals?q=&tag=`    | List the meal library |
 | POST  | `/api/v1/agent/meals`           | Create a meal `{ name, tags?, notes? }` |
-| POST  | `/api/v1/agent/entries`         | Log/plan a meal `{ meal_id, on_date?, slot?, status? }` |
+| POST  | `/api/v1/agent/entries`         | Log/plan a meal `{ meal_id, on_date?, slot?, status?, eater?, reaction? }` |
+| GET   | `/api/v1/agent/suggestions`     | Recent suggestion batches + outcomes |
+| POST  | `/api/v1/agent/suggestions/:batchId/outcome` | Record `{ chosen_meal_id }` or `{ none: true }` |
 | POST  | `/api/v1/agent/plan/suggest`    | Preview meals to fill date×slot cells (does not write) |
 | POST  | `/api/v1/agent/meals/:id/generate-image` | Generate a ComfyUI image `{ prompt?, mode?, photo_id? }` |
 | GET   | `/api/v1/agent/notes`           | List notes (`?unread=1`, `?dismissed=0`) |

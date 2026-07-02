@@ -121,6 +121,23 @@ db.exec(`
     value      TEXT NOT NULL,
     updated_at TEXT DEFAULT (datetime('now'))
   );
+
+  -- Ground truth for the predictive model: every batch of suggestions that was
+  -- actually shown, and what happened to each one. One row per offered meal.
+  -- outcome: 'offered' (no feedback yet) | 'chosen' | 'passed' (another meal in
+  -- the batch was chosen) | 'rejected' (the whole batch was turned down).
+  CREATE TABLE IF NOT EXISTS suggestion_log (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id     TEXT    NOT NULL,
+    meal_id      INTEGER NOT NULL REFERENCES meals(id) ON DELETE CASCADE,
+    rank         INTEGER NOT NULL DEFAULT 0,
+    context_json TEXT,                              -- {slot?, date?, eater?, tags?, variety?, avoid_days?}
+    outcome      TEXT    NOT NULL DEFAULT 'offered',
+    created_at   TEXT    DEFAULT (datetime('now')),
+    resolved_at  TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_suggestion_log_batch ON suggestion_log(batch_id);
+  CREATE INDEX IF NOT EXISTS idx_suggestion_log_meal  ON suggestion_log(meal_id, outcome);
 `);
 
 // One-off migrations for columns added after the original schema. better-sqlite3
@@ -132,6 +149,12 @@ function addColumnIfMissing(table, column, ddl) {
 addColumnIfMissing('meal_photos', 'analysis_json', 'analysis_json TEXT');
 addColumnIfMissing('meal_photos', 'analyzed_at',   'analyzed_at TEXT');
 addColumnIfMissing('meals',       'nutrition_json','nutrition_json TEXT');
+// Who ate this entry. The household is two people; the predictive model needs
+// per-person histories because breakfast/lunch are eaten separately.
+addColumnIfMissing('entries', 'eater', "eater TEXT NOT NULL DEFAULT 'both'");
+// One-tap outcome on an eaten entry: 'liked' | 'sat_poorly' (sensitive-stomach
+// signal the scorer will learn from). NULL = no reaction recorded.
+addColumnIfMissing('entries', 'reaction', 'reaction TEXT');
 
 // Seed a few common tags on first run so the UI isn't empty.
 const tagCount = db.prepare('SELECT COUNT(*) AS n FROM tags').get().n;
@@ -425,6 +448,75 @@ function agentTokenCount() {
   return db.prepare('SELECT COUNT(*) AS n FROM agent_tokens').get().n;
 }
 
+// --- Eaters & suggestion log ---------------------------------------------
+
+// The two-person household. Slot-aware defaults: Christine's lunch is packed
+// (and breakfast is hers — Joseph skips it); dinner is shared.
+const EATERS = ['joseph', 'christine', 'both'];
+function defaultEaterForSlot(slot) {
+  if (slot === 'lunch' || slot === 'breakfast' || slot === 'side') return 'christine';
+  return 'both';
+}
+
+const VALID_REACTIONS = ['liked', 'sat_poorly'];
+
+// Record a batch of offered suggestions. `picks` = [{meal_id, rank}].
+// Returns the batch_id.
+function logSuggestionBatch(picks, context = {}) {
+  const batchId = crypto.randomUUID();
+  const ins = db.prepare(`
+    INSERT INTO suggestion_log (batch_id, meal_id, rank, context_json) VALUES (?, ?, ?, ?)
+  `);
+  const ctx = JSON.stringify(context || {});
+  const tx = db.transaction(() => {
+    for (const p of picks) ins.run(batchId, p.meal_id, p.rank, ctx);
+  });
+  tx();
+  return batchId;
+}
+
+// Resolve a batch: either one meal was chosen (others → 'passed'), or the whole
+// batch was rejected. Returns number of rows updated (0 = unknown batch).
+function resolveSuggestionBatch(batchId, { chosenMealId = null, rejected = false } = {}) {
+  const rows = db.prepare('SELECT id, meal_id FROM suggestion_log WHERE batch_id = ?').all(batchId);
+  if (!rows.length) return 0;
+  const upd = db.prepare(`UPDATE suggestion_log SET outcome = ?, resolved_at = datetime('now') WHERE id = ?`);
+  const tx = db.transaction(() => {
+    for (const r of rows) {
+      const outcome = rejected ? 'rejected' : (r.meal_id === chosenMealId ? 'chosen' : 'passed');
+      upd.run(outcome, r.id);
+    }
+  });
+  tx();
+  return rows.length;
+}
+
+function listSuggestionBatches({ limit = 50 } = {}) {
+  const rows = db.prepare(`
+    SELECT s.batch_id, s.rank, s.outcome, s.context_json, s.created_at, s.resolved_at,
+           m.id AS meal_id, m.name AS meal_name
+    FROM suggestion_log s
+    LEFT JOIN meals m ON m.id = s.meal_id
+    ORDER BY s.created_at DESC, s.batch_id, s.rank
+    LIMIT ?
+  `).all(limit * 5);
+  const byBatch = new Map();
+  for (const r of rows) {
+    if (!byBatch.has(r.batch_id)) {
+      if (byBatch.size >= limit) break;
+      byBatch.set(r.batch_id, {
+        batch_id: r.batch_id,
+        created_at: r.created_at,
+        resolved_at: r.resolved_at,
+        context: safeJSON(r.context_json) || {},
+        picks: [],
+      });
+    }
+    byBatch.get(r.batch_id).picks.push({ meal_id: r.meal_id, name: r.meal_name, rank: r.rank, outcome: r.outcome });
+  }
+  return Array.from(byBatch.values());
+}
+
 // --- App settings (key/value JSON) --------------------------------------
 
 function getSetting(key, fallback = null) {
@@ -485,4 +577,11 @@ module.exports = {
   // App settings
   getSetting,
   setSetting,
+  // Eaters + suggestion feedback
+  EATERS,
+  VALID_REACTIONS,
+  defaultEaterForSlot,
+  logSuggestionBatch,
+  resolveSuggestionBatch,
+  listSuggestionBatches,
 };
