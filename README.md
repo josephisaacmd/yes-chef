@@ -510,17 +510,19 @@ Adding more providers is a ~30-line addition to `lib/ai-provider.js` — all pro
 
 ---
 
-## Pick algorithm — variety scoring
+## Pick algorithm — a repeat-consumption model
 
-Each candidate meal is scored on three signals, then weighted-random sampled:
+Each meal is scored on **its own re-eat clock**, learned from the eater's history (default: Christine's):
 
-- **Recency** — days since last eaten (saturates at 90)
-- **Rarity** — eaten less than its 1/N "fair share" of total entries
-- **Novelty** — flat bonus for never-eaten meals
+- **Dueness** — low right after eating, peaks at the meal's typical gap (median of its historical gaps), decays to a floor when long overdue. Meals with little history inherit their tags' cadence, then the global cadence.
+- **Kick detector** — eaten 2+ times within a week and still fresh → boost ("on a kick 🔥"); a kick gone quiet → satiation cooldown. Normal weekly cadence is not a kick.
+- **Reaction memory** — 😣 `sat_poorly` within 45 days suppresses hard; 👍 `liked` boosts mildly.
+- **Rejection memory** — suggested and passed over in the last 7 days → small penalty.
+- **Novelty** — never-eaten meals sit at a moderate constant so they surface without dominating.
 
-The `variety` slider linearly blends a uniform-weight distribution (0.0) with the variety score (1.0). The avoid-days window is applied as a hard filter, with automatic relaxation if it empties the candidate pool.
+The `variety` slider blends uniform randomness (0) with the model (1). `avoid_days` remains as a small hard filter (default 1 — the cadence curve handles longer horizons). Every suggestion carries a human-readable `_why`.
 
-See `lib/pick-algorithm.js` for the implementation.
+`scoreMeals()` is deterministic (accepts a `today` override) for backtesting; `pickMeals()` adds weighted sampling. `npm test` runs the scorer test suite. See `lib/pick-algorithm.js`.
 
 ---
 

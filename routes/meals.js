@@ -58,15 +58,16 @@ router.get('/', (req, res) => {
   res.json(attachTagsToMeals(meals));
 });
 
-// GET /api/meals/random?tag=healthy&avoid_days=14&variety=0.5
+// GET /api/meals/random?tag=healthy&avoid_days=1&variety=0.5&eater=christine
 // Returns one meal selected by the scoring algorithm in lib/pick-algorithm.
-// `variety` ranges 0..1; 0 = pure random, 1 = strongly prefer novel/under-eaten.
+// `variety` ranges 0..1; 0 = pure random, 1 = trust the predictive model.
 router.get('/random', (req, res) => {
   const tags = [].concat(req.query.tag || []).filter(Boolean);
-  const avoid_days = parseInt(req.query.avoid_days ?? '14', 10);
+  const avoid_days = parseInt(req.query.avoid_days ?? '1', 10);
   const variety = parseFloat(req.query.variety ?? '0.5');
+  const eater = ['joseph', 'christine', 'both'].includes(req.query.eater) ? req.query.eater : 'christine';
 
-  const { picks, fallback } = pickMeals({ tags, variety, avoidDays: avoid_days, limit: 1 });
+  const { picks, fallback } = pickMeals({ tags, variety, avoidDays: avoid_days, limit: 1, eater });
   if (!picks.length) return res.status(404).json({ error: 'no meals match' });
   attachTagsToMeals(picks);
   const meal = picks[0];

@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.0] — 2026-07-02
+
+Phase 2 of the predictive-model roadmap: the scorer itself.
+
+### Changed — Pick algorithm v2 (per-meal cadence, kicks, reactions)
+
+- Every meal is now scored on **its own re-eat clock** learned from Christine's
+  history (median gap between eats), replacing the one-size-fits-all avoid
+  window: score is low right after eating, peaks at the meal's typical gap,
+  and decays to a floor when long overdue (old favourites stay suggestible).
+  Meals with <3 eats inherit their tags' cadence, then the global cadence.
+- **Kick detector**: eaten 2+ times within a week and still fresh → boost
+  ("on a kick 🔥"); 3+ eats in two weeks gone quiet → satiation cooldown.
+  A meal keeping its normal weekly cadence is *not* treated as a kick.
+- **Reaction memory**: 😣 sat_poorly within 45 days → strong suppression;
+  👍 liked → mild boost. **Rejection memory**: suggested-and-passed-over in
+  the last 7 days → small penalty.
+- **Eater-aware**: scores compute from the requested eater's history
+  (default `christine` = entries she ate). Joseph's cafeteria lunches never
+  pollute her model.
+- **Explainable**: every suggestion carries a `_why` (e.g. "typically every
+  ~9d, last eaten 8d ago · on a kick 🔥"), shown in the top-5 UI.
+- `scoreMeals()` is exported as a deterministic function (accepts a `today`
+  override) — the hook for Phase 3 backtesting. `npm test` runs
+  `scripts/test-scorer.js`, 11 assertions over synthetic household patterns.
+- Recommendations accept `?date=` and exclude meals occupying adjacent meal
+  occasions; hard avoid-days default dropped from 14 → 1 everywhere (the
+  cadence model handles longer horizons).
+
+---
+
 ## [0.9.0] — 2026-07-02
 
 Phase 1 of the predictive-model roadmap: capture the data the future scorer

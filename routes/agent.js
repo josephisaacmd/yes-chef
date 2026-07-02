@@ -576,10 +576,23 @@ router.post('/meals/:id/generate-image', async (req, res) => {
 router.get('/recommendations', (req, res) => {
   const tags = [].concat(req.query.tag || []).filter(Boolean);
   const variety = parseFloat(req.query.variety ?? '0.5');
-  const avoid_days = parseInt(req.query.avoid_days ?? '14', 10);
+  const avoid_days = parseInt(req.query.avoid_days ?? '1', 10);
   const n = clampInt(req.query.n, 1, 25, 5);
+  const eater = ['joseph', 'christine', 'both'].includes(req.query.eater) ? req.query.eater : 'christine';
 
-  const result = pickMeals({ tags, variety, avoidDays: avoid_days, limit: n });
+  // If we know which slot/date this is for, exclude meals already occupying
+  // adjacent meal occasions (no back-to-back repeats).
+  const excludeIds = [];
+  const forDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : null;
+  if (forDate) {
+    const near = [isoOffset(forDate, -1), forDate, isoOffset(forDate, 1)];
+    const rows = db.prepare(
+      `SELECT meal_id FROM entries WHERE on_date IN (?, ?, ?)`
+    ).all(...near);
+    excludeIds.push(...rows.map(r => r.meal_id));
+  }
+
+  const result = pickMeals({ tags, variety, avoidDays: avoid_days, limit: n, eater, excludeIds });
   if (!result.picks.length) return res.status(404).json({ error: 'no meals match' });
   attachTagsToMeals(result.picks);
 
@@ -652,7 +665,7 @@ router.post('/plan/suggest', (req, res) => {
 
   const tags        = Array.isArray(b.tags) ? b.tags : [];
   const variety     = parseFloat(b.variety ?? 0.5);
-  const avoid_days  = parseInt(b.avoid_days ?? 14, 10);
+  const avoid_days  = parseInt(b.avoid_days ?? 1, 10);
   const skip_filled = b.skip_filled !== false;
   const excludeIds  = new Set((Array.isArray(b.exclude_meal_ids) ? b.exclude_meal_ids : []).map(Number).filter(Number.isFinite));
 
@@ -689,6 +702,7 @@ router.post('/plan/suggest', (req, res) => {
     avoidDays: avoid_days,
     limit: cells.length,
     excludeIds: Array.from(excludeIds),
+    eater: 'christine',
   });
   if (!result.picks.length) {
     return res.status(404).json({ error: 'no meals match the filters (after exclusions)' });

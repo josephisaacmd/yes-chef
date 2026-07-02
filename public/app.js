@@ -176,12 +176,12 @@ async function showRecommendations() {
     for (const m of data.picks) {
       const row = document.createElement('div');
       row.className = 'rec-row';
-      const days = m._days_since == null ? 'never eaten' : `${m._days_since}d ago`;
       const tagStr = (m.tags || []).map(t => t.name).join(' · ');
+      const why = m._why || (m._days_since == null ? 'never eaten' : `${m._days_since}d ago · eaten ${m._eaten_count}×`);
       row.innerHTML = `
         <div>
-          <div><strong>${escapeHtml(m.name)}</strong></div>
-          <div class="meta">${escapeHtml(days)} · eaten ${m._eaten_count}× ${tagStr ? '· ' + escapeHtml(tagStr) : ''}</div>
+          <div><strong>${escapeHtml(m.name)}</strong> ${tagStr ? `<span class="meta">· ${escapeHtml(tagStr)}</span>` : ''}</div>
+          <div class="meta">${escapeHtml(why)}</div>
         </div>
         <button class="primary" data-id="${m.id}">Pick</button>`;
       row.querySelector('button').addEventListener('click', () => {
